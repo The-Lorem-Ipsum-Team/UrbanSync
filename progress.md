@@ -153,3 +153,25 @@ Known blockers, assumptions, or risks:
 - End-to-end data-backed pipeline verification is still pending until the municipal data files are added.
 - Local environment is missing `folium`, `supervision`, and `openpyxl`; install from `requirements.txt` before running dashboard generation, video processing, or XLSX complaint ingestion.
 - The repository directory is not a git repository, so no commits were made.
+
+## Session Update - 2026-05-27 README
+
+Current objective: create a project `README.md`.
+
+Files created:
+
+- `README.md`
+
+Completed work:
+
+- Added a concise project README covering purpose, CFS formula, requirements, required data files, run commands, outputs, API endpoints, configuration, tests, current status, and project structure.
+
+Verification run:
+
+- `rtk sed -n '1,260p' README.md` -> reviewed generated README content.
+- `rtk pytest -q` -> 5 passed.
+
+Pending work:
+
+- No further README work pending.
+- End-to-end pipeline verification still depends on adding the real municipal datasets and installing the optional missing dependencies noted above.
