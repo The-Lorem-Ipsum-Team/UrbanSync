@@ -1,0 +1,7 @@
+{
+  "เขต 1": {"lat_min": 16.42, "lat_max": 16.47, "lng_min": 102.80, "lng_max": 102.85},
+  "เขต 2": {"lat_min": 16.43, "lat_max": 16.48, "lng_min": 102.82, "lng_max": 102.87},
+  "เขต 3": {"lat_min": 16.38, "lat_max": 16.44, "lng_min": 102.80, "lng_max": 102.85},
+  "เขต 4": {"lat_min": 16.40, "lat_max": 16.46, "lng_min": 102.77, "lng_max": 102.83},
+  "ไม่ระบุ": {"lat_min": 16.41, "lat_max": 16.45, "lng_min": 102.81, "lng_max": 102.85}
+}
