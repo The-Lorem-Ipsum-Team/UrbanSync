@@ -175,3 +175,23 @@ Pending work:
 
 - No further README work pending.
 - End-to-end pipeline verification still depends on adding the real municipal datasets and installing the optional missing dependencies noted above.
+
+## Session Update - 2026-05-27 README Command Cleanup
+
+Current objective: remove local `rtk` wrapper references from public README commands.
+
+Files updated:
+
+- `README.md`
+- `progress.md`
+
+Completed work:
+
+- Replaced README commands with plain `python` and `pytest` commands.
+- Removed the note about using commands without `rtk`.
+
+Verification run:
+
+- `rtk rg -n "rtk" README.md` -> no matches.
+- `rtk sed -n '25,155p' README.md` -> reviewed updated command sections.
+- `rtk pytest -q` -> 5 passed.

@@ -32,10 +32,8 @@ The pipeline produces:
 Install dependencies:
 
 ```bash
-rtk python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
-
-If `rtk` is not available in your shell, use the same commands without the `rtk` prefix.
 
 ## Required Data Files
 
@@ -61,25 +59,25 @@ The traffic CSV is expected to include checkpoint fields such as `ที่`, `�
 Run the standard data pipeline without video processing:
 
 ```bash
-rtk python main.py --skip-video
+python main.py --skip-video
 ```
 
 Run with optional NLP topic modeling:
 
 ```bash
-rtk python main.py --skip-video --with-nlp
+python main.py --skip-video --with-nlp
 ```
 
 Run with local CCTV video processing:
 
 ```bash
-rtk python main.py --video-dir data/videos
+python main.py --video-dir data/videos
 ```
 
 Run and then start the API:
 
 ```bash
-rtk python main.py --skip-video --serve
+python main.py --skip-video --serve
 ```
 
 By default, the API starts on:
@@ -146,7 +144,7 @@ Configuration lives under `config/`:
 Run the focused test suite:
 
 ```bash
-rtk pytest -q
+pytest -q
 ```
 
 Current tests cover:
