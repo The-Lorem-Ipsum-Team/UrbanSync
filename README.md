@@ -29,7 +29,7 @@ The pipeline produces:
 - Input datasets under `data/`
 - Python packages from `requirements.txt`
 
-### Install dependencies:
+Install dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
