@@ -117,6 +117,7 @@ def create_dashboard_html(stats: dict[str, Any], ranked_queue_list: list[dict[st
         )
     generated = html.escape(str(stats.get("generated_at", dt.datetime.now().isoformat())))
     map_html = map_obj._repr_html_()
+    note = html.escape(str(stats.get("severity_vs_traffic_note", "")))
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -132,6 +133,9 @@ main {{ padding:24px 32px 36px; }}
 .cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:22px; }}
 .card {{ background:#12263A; border:1px solid #1E3A56; border-radius:8px; padding:16px; }}
 .card b {{ display:block; color:#1D9E75; font-size:26px; margin-top:6px; }}
+.explanation-box {{ background:#0F2922; border:1px solid #1D9E75; border-radius:8px; padding:16px; margin-bottom:22px; }}
+.explanation-box h3 {{ margin:0 0 8px 0; color:#8DE3C2; font-size:16px; }}
+.explanation-box p {{ margin:0; font-size:14px; line-height:1.5; color:#E1E8F0; }}
 .map {{ height:500px; overflow:hidden; border-radius:8px; border:1px solid #1E3A56; background:#fff; margin-bottom:24px; }}
 .map iframe, .map .folium-map {{ height:500px !important; width:100% !important; }}
 table {{ width:100%; border-collapse:collapse; background:#12263A; border-radius:8px; overflow:hidden; }}
@@ -154,6 +158,7 @@ footer {{ color:#9FB3C8; padding:24px 32px; border-top:1px solid #1E3A56; }}
 <div class="card">Mean CFS Score<b>{float(stats.get('mean_cfs_score', 0.0)):.2f}</b></div>
 <div class="card">Mean Days Open<b>{float(stats.get('mean_days_open', 0.0)):.1f}</b></div>
 </section>
+{f"<section class='explanation-box'><h3>Algorithmic Note: Severity vs. Traffic Weighting</h3><p>{note}</p></section>" if note else ""}
 <section class="map">{map_html}</section>
 <section class="bars"><h2>CFS Tier Distribution</h2>{_tier_bars(stats)}</section>
 <section><h2>Top 20 Priority Complaints</h2><table><thead><tr><th>#</th><th>Type</th><th>Description</th><th>District</th><th>Days Open</th><th>Severity</th><th>x Multiplier</th><th>CFS Score</th><th>Tier</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>

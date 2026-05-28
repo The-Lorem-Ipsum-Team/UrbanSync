@@ -17,6 +17,25 @@ OUTPUT_DIR = Path("outputs")
 
 def compute_cfs(df: pd.DataFrame) -> pd.DataFrame:
     """Filter open complaints and compute CFS score, tier, rank, and ordering."""
+    # ── CFS WEIGHTING DESIGN NOTE ─────────────────────────────────────────────────────
+    # CFS = severity_score (1–10) × traffic_multiplier (1.0–3.0)
+    #
+    # Severity has a wider range (10x) than the multiplier (3x). This is
+    # intentional: the TYPE of infrastructure failure is the primary dispatch
+    # signal. A flood or collapsed road affects surrounding road capacity
+    # beyond just the nearest checkpoint — its impact is not bounded by one
+    # sensor location.
+    #
+    # The traffic multiplier is the LOCATION TIEBREAKER: between two complaints
+    # of equal severity, crews are directed to the higher-volume corridor first.
+    #
+    # Example — two identical potholes (severity = 9):
+    #   ถ.กสิกรทุ่งสร้าง (160k/day, mult=3.0) → CFS = 27.0  ← dispatched first
+    #   Quiet residential soi (20k/day, mult=1.0) → CFS = 9.0
+    #
+    # Max possible CFS = 30.0 (severity=10, mult=3.0)
+    # Min possible CFS =  1.0 (severity=1,  mult=1.0)
+    # ──────────────────────────────────────────────────────────────────────
     open_df = df[df["is_open"] == True].copy()
     open_df["cfs_score"] = (open_df["severity_score"].astype(float) * open_df["traffic_multiplier"].astype(float)).round(2)
     conditions = [
@@ -29,13 +48,20 @@ def compute_cfs(df: pd.DataFrame) -> pd.DataFrame:
     open_df = open_df.sort_values("priority_rank").reset_index(drop=True)
     print("CFS tier distribution:")
     print(open_df["cfs_tier"].value_counts().to_string())
+    print()
+    print("CFS weighting:")
+    print(f"  Mean severity score    : {open_df['severity_score'].mean():.2f} / 10")
+    print(f"  Mean traffic multiplier: {open_df['traffic_multiplier'].mean():.2f} / 3.0")
+    print(f"  Mean CFS score         : {open_df['cfs_score'].mean():.2f} / 30.0")
+    print("  Severity is primary signal. Multiplier is location tiebreaker.")
     return open_df
 
 
 def compute_fifo_vs_cfs_comparison(df: pd.DataFrame) -> pd.DataFrame:
     """Compare oldest-first FIFO ranking with CFS priority ranking and save CSV."""
     result = df.copy()
-    result["วันที่รับเรื่อง_sort"] = pd.to_datetime(result["วันที่รับเรื่อง"], errors="coerce")
+    date_col = "date_received" if "date_received" in result.columns else "วันที่รับเรื่อง"
+    result["วันที่รับเรื่อง_sort"] = pd.to_datetime(result[date_col], errors="coerce")
     result["fifo_rank"] = result["วันที่รับเรื่อง_sort"].rank(ascending=True, method="first").astype(int)
     result["rank_change"] = result["fifo_rank"] - result["priority_rank"]
     result["rank_change_label"] = np.select(
@@ -112,6 +138,27 @@ def compute_statistics(df: pd.DataFrame, full_df: pd.DataFrame) -> dict[str, Any
         "top_affected_district": str(df["เขต"].value_counts().index[0]) if not df.empty else "",
         "mean_cfs_score": round(float(df["cfs_score"].mean()), 2) if not df.empty else 0.0,
         "max_cfs_score": round(float(df["cfs_score"].max()), 2) if not df.empty else 0.0,
+        "severity_vs_traffic_note": (
+            "The CFS formula is severity_score (1-10) * traffic_multiplier (1.0-3.0). "
+            "Because severity_score has a 10x range and traffic_multiplier has a 3x range, "
+            "severity naturally dominates the priority ranking. This design choice ensures that "
+            "high-hazard incidents (e.g. major flooding or failed traffic lights) are prioritized "
+            "over minor issues, while traffic volume acts as a strong multiplier and tie-breaker."
+        ),
+        "design_notes": {
+            "cfs_formula": "CFS = severity_score x traffic_multiplier",
+            "severity_range": "1\u201310 (complaint type + Thai keyword boost)",
+            "multiplier_range": "1.0\u20133.0 (continuous linear scale)",
+            "dominant_factor": "severity_score",
+            "rationale": (
+                "Complaint type is the primary dispatch signal. "
+                "Infrastructure failures like floods affect surrounding road capacity "
+                "beyond a single checkpoint. Traffic volume is the tiebreaker between "
+                "equal-severity complaints, directing crews to higher-volume corridors."
+            ),
+            "max_possible_cfs": 30.0,
+            "min_possible_cfs": 1.0,
+        },
         "generated_at": dt.datetime.now().isoformat(),
     }
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

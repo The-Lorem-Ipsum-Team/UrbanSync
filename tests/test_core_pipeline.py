@@ -23,7 +23,7 @@ def test_traffic_weighted_volume_and_multiplier_thresholds() -> None:
 
     assert result["weighted_volume"].tolist() == [140.0, 140.0, 140.0, 140.0]
     assert result["traffic_tier"].tolist() == ["critical", "high", "medium", "low"]
-    assert result["traffic_multiplier"].tolist() == [3.0, 2.0, 1.5, 1.0]
+    assert result["traffic_multiplier"].tolist() == [3.0, 2.385, 1.769, 1.154]
 
 
 def test_parse_thai_date_converts_buddhist_year_and_rejects_invalid() -> None:

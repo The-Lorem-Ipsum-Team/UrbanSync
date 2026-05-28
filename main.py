@@ -31,13 +31,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", default="outputs")
     parser.add_argument("--complaints", default="data/complaints.xlsx")
     parser.add_argument("--traffic-csv", default="data/traffic_dashboard.csv")
-    parser.add_argument("--model", default="models/yolov8s-visdrone.pt")
+    # COCO weights used universally — handles sideways, overhead, and
+    # intersection cameras. VisDrone only improves pure aerial footage
+    # and is not worth the complexity for a mixed dataset.
+    parser.add_argument("--model", default="models/yolov8s.pt")
     parser.add_argument("--video-dir", default=None)
     parser.add_argument("--youtube-url", default=None)
     parser.add_argument("--with-nlp", action="store_true")
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--skip-video", action="store_true")
+    parser.add_argument("--max-frames", type=int, default=None, help="Max video frames to process (for sampling/speedup)")
     return parser.parse_args(argv)
 
 
@@ -76,7 +80,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         video_dir = Path(args.video_dir or "data/videos")
         if args.youtube_url:
             cv_pipeline.download_youtube_videos(args.youtube_url, video_dir)
-        cv_pipeline.process_all_videos(video_dir, args.model, config_dir / "video_tripwires.json")
+        cv_pipeline.process_all_videos(video_dir, args.model, config_dir / "video_tripwires.json", max_frames=args.max_frames)
 
     video_counts = output_dir / "video_counts.csv"
     traffic_df = _timed(

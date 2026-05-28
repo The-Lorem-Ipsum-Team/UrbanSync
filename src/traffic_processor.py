@@ -42,24 +42,40 @@ def load_traffic_data(csv_path: str | Path) -> pd.DataFrame:
 
 
 def compute_weighted_volume(df: pd.DataFrame) -> pd.DataFrame:
-    """Add weighted volume, traffic tier, and multiplier columns."""
+    """Add weighted volume, traffic tier, and multiplier columns.
+
+    Uses continuous linear scaling (1.0–3.0) rather than discrete tiers to
+    avoid artificial priority cliffs between nearly-equal-volume checkpoints.
+    traffic_tier column is retained for human-readable display only.
+    """
     result = df.copy()
     result["weighted_volume"] = (
         result["Car"].astype(float) * 1.0
         + result["Motorcycle"].astype(float) * 0.5
         + result["Truck"].astype(float) * 3.0
     )
+
+    # Continuous multiplier: 1.0 + (volume / 130_000) * 2.0, clamped [1.0, 3.0]
+    raw_multiplier = 1.0 + (result["รวมต่อวัน"].astype(float) / 130_000) * 2.0
+    result["traffic_multiplier"] = raw_multiplier.clip(lower=1.0, upper=3.0).round(3)
+
+    # Traffic tier — for display/filtering only, does NOT drive the multiplier
     conditions = [
         result["รวมต่อวัน"] > 130000,
         result["รวมต่อวัน"] > 80000,
         result["รวมต่อวัน"] > 30000,
     ]
     result["traffic_tier"] = np.select(conditions, ["critical", "high", "medium"], default="low")
-    result["traffic_multiplier"] = result["traffic_tier"].map(
-        {"critical": 3.0, "high": 2.0, "medium": 1.5, "low": 1.0}
-    )
+
     print("Traffic tier distribution:")
     print(result["traffic_tier"].value_counts().to_string())
+
+    min_mult = result["traffic_multiplier"].min()
+    max_mult = result["traffic_multiplier"].max()
+    mean_mult = result["traffic_multiplier"].mean()
+    print("Traffic multipliers assigned (continuous 1.0–3.0):")
+    print(f"  Range: {min_mult:.3f} – {max_mult:.3f}")
+    print(f"  Mean:  {mean_mult:.3f}")
     return result
 
 
@@ -94,9 +110,25 @@ def cross_validate_with_video(traffic_df: pd.DataFrame, video_csv_path: str | Pa
         result["estimated_true_volume"] = result["รวมต่อวัน"].astype(int)
         return result
 
+    # Fix 3: filter for reliably-extrapolated rows before computing correction factors
+    if "extrapolation_reliable" in video_df.columns:
+        reliable_df = video_df[video_df["extrapolation_reliable"] == True].copy()
+    else:
+        reliable_df = video_df  # backward compat if column absent
+
+    n_reliable = len(reliable_df)
+    n_total = len(video_df)
+    print(f"Cross-validation: using {n_reliable}/{n_total} videos (reliable extrapolation).")
+    if n_reliable == 0:
+        print("  ⚠ No reliable extrapolations found. Correction factor defaulted to 1.0.")
+        print("    Re-run with larger --max-frames for accurate cross-validation.")
+        result["correction_factor"] = 1.0
+        result["estimated_true_volume"] = result["รวมต่อวัน"].astype(int)
+        return result
+
     candidates = result["เส้นทาง"].astype(str) + " " + result["ตำแหน่งติดตั้งเครื่องวัด"].astype(str)
     matches: list[dict[str, object]] = []
-    for _, row in video_df.iterrows():
+    for _, row in reliable_df.iterrows():
         location_name = str(row.get("location_name", ""))
         matched_index, ratio = _match_location(location_name, candidates)
         if matched_index is None or ratio <= 0.35:
@@ -119,7 +151,7 @@ def cross_validate_with_video(traffic_df: pd.DataFrame, video_csv_path: str | Pa
     mean_factor = float(result["correction_factor"].dropna().mean()) if result["correction_factor"].notna().any() else 1.0
     result["correction_factor"] = result["correction_factor"].fillna(mean_factor)
     result["estimated_true_volume"] = (result["รวมต่อวัน"].astype(float) * result["correction_factor"]).round().astype(int)
-    print(f"Cross-validation: matched {len(matches)}/{len(result)} checkpoints. Mean correction factor: {mean_factor:.2f}")
+    print(f"Matched {len(matches)}/{len(result)} checkpoints. Mean correction factor: {mean_factor:.2f}")
     if matches:
         print(pd.DataFrame(matches).to_string(index=False))
     return result
