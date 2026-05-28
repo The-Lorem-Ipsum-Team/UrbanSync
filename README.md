@@ -157,9 +157,13 @@ Current tests cover:
 
 ## Current Status
 
-The codebase is implemented and core tests pass in the available environment.
+The codebase is fully implemented, verified end-to-end using our mock data generator (`generate_mock_data.py`), and all 5 tests are passing.
 
-End-to-end pipeline verification still requires the real municipal datasets. Some optional dependencies may also need installation before using all features, especially:
+To verify the pipeline locally, you can run:
+1. `python generate_mock_data.py` (generates mock municipal data under `data/`)
+2. `python main.py --skip-video` (runs the full data-fusion pipeline and compiles the dashboard)
+
+Verification on actual real-world municipal datasets will be conducted once they are provided. Some optional dependencies may also need installation before using all features, especially:
 
 - `folium` for dashboard generation
 - `openpyxl` for complaint XLSX ingestion
