@@ -1,0 +1,748 @@
+You are an expert Python engineer. Write a complete, fully working codebase for UrbanSync Khon Kaen — a Smart City hackathon project. Generate every file listed. Each file must be complete and runnable with no placeholders, no "TODO", no "pass" stubs.
+
+══════════════════════════════════════════════════════════════
+PROJECT OVERVIEW
+══════════════════════════════════════════════════════════════
+
+UrbanSync fuses two municipal datasets to calculate a Civic Friction Score (CFS) for every open infrastructure complaint in Khon Kaen city, Thailand. The CFS re-ranks the complaint dispatch queue from First-In-First-Out to Mobility-ROI order — fixing complaints that block the most traffic first.
+
+CFS FORMULA:
+  CFS = complaint_severity_score × traffic_multiplier
+
+  complaint_severity_score: integer 1–10
+  traffic_multiplier: float
+    >130,000 vehicles/day  → 3.0
+    80,000–130,000         → 2.0
+    30,000–80,000          → 1.5
+    <30,000                → 1.0
+
+══════════════════════════════════════════════════════════════
+FILES TO GENERATE
+══════════════════════════════════════════════════════════════
+
+Generate all of the following files in full:
+
+  requirements.txt
+  config/severity_lookup.json
+  config/severity_keywords.json
+  config/district_bounds.json
+  config/video_tripwires.json
+  src/__init__.py
+  src/cv_pipeline.py
+  src/traffic_processor.py
+  src/complaint_processor.py
+  src/spatial_join.py
+  src/cfs_engine.py
+  src/dashboard.py
+  src/api.py
+  main.py
+
+Output each file with a header comment: # FILE: <filename>
+Then the complete file contents. Separate files with a blank line.
+
+══════════════════════════════════════════════════════════════
+DATASET SCHEMAS
+══════════════════════════════════════════════════════════════
+
+DATASET 1A — YouTube CCTV Videos (35 clips)
+  Location: data/videos/*.mp4
+  Overhead multi-lane camera angle showing multiple lanes, both directions.
+  Task: unique vehicle counting — each physical vehicle counted exactly once.
+  Vehicle types to detect: car, motorcycle, truck (map COCO bus→truck).
+
+DATASET 1B — traffic_dashboard.csv (25 rows)
+  Columns:
+    ที่          int     checkpoint number 1–25
+    เส้นทาง      str     road name (e.g. "ถ.กสิกรทุ่งสร้าง")
+    ตำแหน่งติดตั้งเครื่องวัด  str  location description
+    Lat          float   latitude  (~16.37–16.49)
+    Lng or Lag   float   longitude (~102.78–102.85) — normalize 'Lag'→'Lng'
+    Car          int     car count per day  (18,913–66,220)
+    Motorcycle   int     motorcycle count   (1,667–47,205)
+    Truck        int     truck count        (2,681–19,043)
+    รวมต่อวัน    int     total per day      (53,419–160,892)
+    คัน/ชั่วโมง  int     vehicles per hour  (2,755–8,298)
+  NOTE: single-lane counts (one direction). Videos give bidirectional ground truth.
+
+DATASET 2 — complaints.xlsx (~46,189 rows)
+  Columns:
+    ส่วนงาน          str   department
+    ฝ่าย             str   division
+    เลขคำร้อง        str   complaint reference number
+    เรื่องร้องทุกข์   str   free-text complaint subject (Thai)
+    ประเภทคำร้อง      str   complaint category (Thai)
+    เขต              str   district: "เขต 1"/"เขต 2"/"เขต 3"/"เขต 4"/"ไม่ระบุ"
+    ชุมชน            str   community name or "ไม่ระบุ"
+    วันที่รับเรื่อง   str   date received DD/MM/YYYY (Buddhist Era year, BE-543=CE)
+    วันที่เสร็จ       str   date completed (may be NaN)
+    สถานะ            str   status
+
+  OPEN statuses: "รอช่างรับเรื่อง", "กำลังดำเนินการ", "อยู่ระหว่างการติดตาม",
+                 "เกินกำหนด", "ส่งต่อหน่วยงานอื่น"
+  CLOSED status: "ประเมินผลเสร็จสิ้น"
+
+══════════════════════════════════════════════════════════════
+CONFIG FILE CONTENTS
+══════════════════════════════════════════════════════════════
+
+config/severity_lookup.json — maps ประเภทคำร้อง to base severity score 1–10:
+{
+  "น้ำท่วม": 10,
+  "ถนน": 9,
+  "วิศวกรรมจราจร": 8,
+  "ท่อระบายน้ำ": 8,
+  "ไฟจราจร": 8,
+  "ไฟฟ้าขยายเขต": 6,
+  "ไฟฟ้า": 5,
+  "งานตัดกิ่งไม้และเกาะกลางถนน": 4,
+  "งานอื่น ๆ": 3,
+  "งานบำบัดน้ำเสีย": 3,
+  "งานกำจัดขยะมูลฝอยและสิ่งปฏิกูล": 3,
+  "งานอาคาร": 2,
+  "งานควบคุมการก่อสร้าง": 2,
+  "งานสวนสาธารณะ": 2,
+  "งานสถานที่": 1,
+  "งานศูนย์เครื่องจักรกล": 2
+}
+
+config/severity_keywords.json — Thai keywords found in เรื่องร้องทุกข์ that boost severity:
+{
+  "น้ำท่วม": 2, "หลุมบ่อ": 2, "พัง": 2, "อุดตัน": 2,
+  "ดับ": 2, "ชำรุด": 1, "เสียหาย": 1, "อันตราย": 2,
+  "ฉุกเฉิน": 3, "ด่วน": 2, "แตก": 2, "ทรุด": 2,
+  "ระเบิด": 3, "ไหล": 1, "สกปรก": 1, "ขวาง": 2
+}
+
+config/district_bounds.json — bounding boxes for เขต 1–4 used to approximate complaint location:
+{
+  "เขต 1": {"lat_min": 16.42, "lat_max": 16.47, "lng_min": 102.80, "lng_max": 102.85},
+  "เขต 2": {"lat_min": 16.43, "lat_max": 16.48, "lng_min": 102.82, "lng_max": 102.87},
+  "เขต 3": {"lat_min": 16.38, "lat_max": 16.44, "lng_min": 102.80, "lng_max": 102.85},
+  "เขต 4": {"lat_min": 16.40, "lat_max": 16.46, "lng_min": 102.77, "lng_max": 102.83},
+  "ไม่ระบุ": {"lat_min": 16.41, "lat_max": 16.45, "lng_min": 102.81, "lng_max": 102.85}
+}
+
+config/video_tripwires.json — tripwire line coordinates per video (as fraction of frame 0.0–1.0):
+{
+  "default": {
+    "line_A": [[0.1, 0.5], [0.9, 0.5]],
+    "line_B": [[0.1, 0.55], [0.9, 0.55]],
+    "direction_A_label": "northbound",
+    "direction_B_label": "southbound"
+  }
+}
+Note: all videos use "default" unless a specific video_id key exists.
+Coordinates are fractions of frame width/height — multiply by actual frame size at runtime.
+
+══════════════════════════════════════════════════════════════
+requirements.txt
+══════════════════════════════════════════════════════════════
+
+ultralytics>=8.0.0
+supervision>=0.18.0
+opencv-python>=4.8.0
+yt-dlp>=2024.1.0
+pandas>=2.0.0
+geopandas>=0.14.0
+openpyxl>=3.1.0
+scipy>=1.11.0
+numpy>=1.24.0
+tqdm>=4.65.0
+pythainlp>=5.0.0
+sentence-transformers>=2.2.0
+bertopic>=0.16.0
+scikit-learn>=1.3.0
+folium>=0.15.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+pathlib2>=2.3.7
+
+══════════════════════════════════════════════════════════════
+MODULE 1 — src/cv_pipeline.py
+══════════════════════════════════════════════════════════════
+
+PURPOSE: Process CCTV videos to count unique vehicles crossing tripwire lines.
+
+IMPORTS NEEDED: ultralytics, supervision, cv2, pathlib, json, pandas, numpy, tqdm
+
+FUNCTION 1: load_tripwire_config(config_path, video_id, frame_width, frame_height) -> dict
+  Load config/video_tripwires.json. Look up video_id key; fall back to "default".
+  Convert fractional coordinates to pixel coordinates:
+    pixel_x = fraction_x * frame_width
+    pixel_y = fraction_y * frame_height
+  Return dict with keys: line_A_points, line_B_points, direction_A_label, direction_B_label
+  where *_points are lists of (int, int) tuples.
+
+FUNCTION 2: process_video(video_path, model_path, tripwire_config_path,
+                           video_id=None, location_name="unknown") -> dict
+  Steps:
+  a. Load YOLO model: model = YOLO(model_path)
+  b. Open video with cv2.VideoCapture to get frame_width, frame_height, fps, total_frames
+  c. Load tripwire config using load_tripwire_config()
+  d. Define two supervision.LineZone objects from the pixel coordinates
+     LineZone(start=sv.Point(x1,y1), end=sv.Point(x2,y2))
+  e. Track with: results = model.track(source=str(video_path), tracker="bytetrack.yaml",
+                                        persist=True, stream=True, verbose=False)
+  f. For each result frame:
+     - Convert to supervision: detections = sv.Detections.from_ultralytics(result)
+     - Filter classes: keep only class_ids in [2,3,5,7]
+       (COCO: 2=car, 3=motorcycle, 5=bus, 7=truck)
+     - Map classes: {2:'Car', 3:'Motorcycle', 5:'Truck', 7:'Truck'}
+     - Only keep detections with tracker_id not None
+     - Update both LineZone objects: zone_A.trigger(detections), zone_B.trigger(detections)
+     - Track unique crossings per class using sets:
+         crossed_A: dict mapping track_id -> vehicle_class
+         crossed_B: dict mapping track_id -> vehicle_class
+       Add to crossed_A only when zone_A.in_count increases for that track_id
+  g. Count final unique vehicles:
+     For each crossed dict, count by class.
+  h. Return dict:
+     {
+       "video_id": str,
+       "location_name": str,
+       "direction_A_label": str,
+       "direction_B_label": str,
+       "direction_A_total": int,
+       "direction_B_total": int,
+       "bidirectional_total": int,
+       "car_count": int,
+       "motorcycle_count": int,
+       "truck_count": int,
+       "total_unique_vehicles": int,
+       "processed_frames": int,
+       "video_duration_seconds": float,
+       "source_file": str
+     }
+
+FUNCTION 3: process_all_videos(video_dir, model_path, tripwire_config_path,
+                                video_location_map=None) -> pd.DataFrame
+  - video_location_map: optional dict mapping filename stem -> location_name string
+  - Find all .mp4, .avi, .mkv, .mov files in video_dir
+  - Process each with process_video(), catching exceptions per video
+  - Show tqdm progress bar
+  - Collect results into a list of dicts
+  - Save to outputs/video_counts.csv
+  - Print summary table: location | bidirectional | car | motorcycle | truck
+  - Return DataFrame
+
+FUNCTION 4: download_youtube_videos(playlist_url, output_dir) -> list[Path]
+  - Use yt_dlp to download all videos from playlist
+  - Output format: mp4, max resolution 720p
+  - Save to output_dir with filename = video title sanitized
+  - Return list of downloaded file paths
+  - yt_dlp options:
+    {'format': 'best[height<=720]', 'outtmpl': str(output_dir/%(title)s.%(ext)s'),
+     'quiet': True, 'no_warnings': True}
+
+══════════════════════════════════════════════════════════════
+MODULE 2 — src/traffic_processor.py
+══════════════════════════════════════════════════════════════
+
+PURPOSE: Load traffic dashboard CSV, compute weighted volume, assign multipliers,
+         cross-validate against video counts.
+
+IMPORTS NEEDED: pandas, numpy, pathlib, json, difflib, math
+
+FUNCTION 1: load_traffic_data(csv_path) -> pd.DataFrame
+  - Read CSV with pandas
+  - Normalize column names:
+      Rename 'Lag' to 'Lng' if 'Lng' not present
+      Strip whitespace from all column names
+  - Convert Car, Motorcycle, Truck, รวมต่อวัน to int
+    (handle strings with commas: str.replace(',','').astype(int))
+  - Drop rows where Lat or Lng is null or zero
+  - Add column: checkpoint_id = "CP_" + ที่.astype(str).str.zfill(2)
+  - Validate: print column names and first row for debugging
+  - Return cleaned DataFrame
+
+FUNCTION 2: compute_weighted_volume(df) -> pd.DataFrame
+  - weighted_volume = (Car * 1.0) + (Motorcycle * 0.5) + (Truck * 3.0)
+  - traffic_tier:
+      รวมต่อวัน > 130000  → "critical"
+      รวมต่อวัน > 80000   → "high"
+      รวมต่อวัน > 30000   → "medium"
+      else                → "low"
+  - traffic_multiplier: critical=3.0, high=2.0, medium=1.5, low=1.0
+  - Print distribution: how many checkpoints per tier
+  - Return df with new columns
+
+FUNCTION 3: cross_validate_with_video(traffic_df, video_csv_path) -> pd.DataFrame
+  - If video_csv_path does not exist, print warning and return traffic_df unchanged
+  - Load video_counts.csv
+  - For each video row, fuzzy match location_name against traffic เส้นทาง + ตำแหน่งติดตั้งเครื่องวัด
+    combined string using difflib.SequenceMatcher
+    Match threshold: ratio > 0.35
+  - For matched pairs compute:
+      correction_factor = video_bidirectional_total / รวมต่อวัน
+      (clip to range 0.5–5.0 to remove outliers)
+  - Add to traffic_df: matched_video_id (str or None), correction_factor (float)
+  - Unmatched rows get correction_factor = mean of matched correction factors
+  - estimated_true_volume = รวมต่อวัน * correction_factor (round to int)
+  - Print: "Cross-validation: matched X/25 checkpoints. Mean correction factor: Y.YY"
+  - Print matched pairs table: checkpoint | video | correction_factor
+  - Return enriched traffic_df
+
+FUNCTION 4: process_traffic_data(csv_path, video_counts_path=None) -> pd.DataFrame
+  - Orchestrates functions 1–3 in order
+  - Saves outputs/traffic_enriched.csv
+  - Returns enriched DataFrame
+
+══════════════════════════════════════════════════════════════
+MODULE 3 — src/complaint_processor.py
+══════════════════════════════════════════════════════════════
+
+PURPOSE: Load complaint XLSX, parse Thai dates, score severity, run topic modeling.
+
+IMPORTS NEEDED: pandas, numpy, pathlib, json, re, datetime
+                pythainlp.tokenize, pythainlp.corpus
+                sentence_transformers (optional), bertopic (optional)
+                sklearn.feature_extraction.text, sklearn.cluster (fallback)
+
+FUNCTION 1: parse_thai_date(date_str) -> datetime.date or None
+  - Input format: "DD/MM/YYYY" where YYYY is Buddhist Era (BE)
+  - Convert: CE_year = BE_year - 543
+  - Return datetime.date(CE_year, month, day) or None if unparseable
+  - Handle edge cases: NaN, empty string, non-string input
+
+FUNCTION 2: load_complaints(xlsx_path) -> pd.DataFrame
+  - Read with pd.read_excel(engine='openpyxl')
+  - Strip whitespace from all string columns
+  - Apply parse_thai_date to วันที่รับเรื่อง and วันที่เสร็จ
+  - Add: is_open = สถานะ != "ประเมินผลเสร็จสิ้น"
+  - Add: days_open = (datetime.date.today() - date_received).days for open rows, else None
+  - Add: resolution_days = (date_completed - date_received).days for closed rows, else None
+  - Normalize เขต: strip, replace empty/"nan" with "ไม่ระบุ"
+  - Normalize ชุมชน: strip, replace empty with "ไม่ระบุ"
+  - Print: "Loaded {N} complaints. Open: {X} | Closed: {Y}"
+  - Return DataFrame
+
+FUNCTION 3: apply_severity_scores(df, severity_lookup_path, keyword_path) -> pd.DataFrame
+  - Load both JSON files
+  - base_severity: map ประเภทคำร้อง via lookup (default 3 if not found)
+    Use partial matching: if exact key not found, check if any key is substring of value
+  - keyword_boost: for each เรื่องร้องทุกข์ row:
+      tokenize with pythainlp.word_tokenize(text, engine='newmm', keep_whitespace=False)
+      find max boost value among tokens that exist in keyword dict
+      keyword_boost = max boost found (0 if none)
+  - severity_score = min(10, base_severity + keyword_boost)
+  - Print severity distribution as histogram (text-based)
+  - Return df with: base_severity, keyword_boost, severity_score columns
+
+FUNCTION 4: compute_resolution_baseline(df) -> dict
+  - Filter closed complaints with valid resolution_days
+  - Group by ประเภทคำร้อง, compute mean and median resolution_days
+  - Save to outputs/resolution_baseline.json as:
+    {"complaint_type": {"mean_days": float, "median_days": float, "count": int}, ...}
+  - Print top 5 slowest types and top 5 fastest types
+  - Return the dict
+
+FUNCTION 5: run_topic_modeling(df, n_topics=10) -> pd.DataFrame
+  - Filter rows where เรื่องร้องทุกข์ is not null and len(str) > 5
+  - STEP A — Tokenize:
+      stopwords = set(pythainlp.corpus.thai_stopwords())
+      For each text: tokens = word_tokenize(text, engine='newmm')
+                     tokens = [t for t in tokens if t not in stopwords and len(t) > 1]
+                     processed = " ".join(tokens)
+  - STEP B — Try BERTopic with WangchanBERTa:
+      Try: from sentence_transformers import SentenceTransformer
+           from bertopic import BERTopic
+           embedding_model = SentenceTransformer("airesearch/wangchanberta-base-att-spm-uncased")
+           topic_model = BERTopic(embedding_model=embedding_model,
+                                  nr_topics=n_topics, min_topic_size=15,
+                                  language="multilingual", verbose=False)
+           topics, probs = topic_model.fit_transform(processed_texts)
+      Except ImportError or any error:
+           Print "BERTopic unavailable, using TF-IDF + KMeans fallback"
+           Use sklearn TfidfVectorizer(max_features=500) + KMeans(n_clusters=n_topics)
+           topics = kmeans.labels_
+  - Map topics back to original df index
+  - Add to df: topic_id (int), topic_label (str — top 3 keywords joined by "/")
+  - Save topic summary to outputs/complaint_topics.csv
+  - Print top topics with keyword summaries
+  - Return df with topic columns
+
+FUNCTION 6: process_complaints(xlsx_path, severity_lookup_path, keyword_path,
+                               run_nlp=True) -> pd.DataFrame
+  - Orchestrate functions 2–5 (function 5 only if run_nlp=True)
+  - Save outputs/complaints_enriched.csv
+  - Return enriched DataFrame
+
+══════════════════════════════════════════════════════════════
+MODULE 4 — src/spatial_join.py
+══════════════════════════════════════════════════════════════
+
+PURPOSE: Join each complaint to its nearest traffic GPS checkpoint using
+         district bounding box centroids and KDTree nearest-neighbor search.
+
+IMPORTS NEEDED: pandas, numpy, pathlib, json, math
+                scipy.spatial.KDTree
+
+FUNCTION 1: haversine_km(lat1, lng1, lat2, lng2) -> float
+  - Standard haversine formula, returns kilometers
+  - R = 6371.0
+  - All inputs converted to radians internally
+
+FUNCTION 2: load_district_bounds(bounds_path) -> dict
+  - Load config/district_bounds.json
+  - Return dict as-is
+
+FUNCTION 3: district_to_centroid(district_str, district_bounds) -> tuple[float, float]
+  - Compute centroid of bounding box for given district key
+  - centroid_lat = (lat_min + lat_max) / 2
+  - centroid_lng = (lng_min + lng_max) / 2
+  - If district_str not in bounds: use "ไม่ระบุ" entry (KK city center)
+  - Return (lat, lng)
+
+FUNCTION 4: build_complaint_coordinates(complaints_df, district_bounds) -> np.ndarray
+  - For each row in complaints_df, get centroid from district_to_centroid()
+  - Return numpy array of shape (N, 2) with columns [lat, lng]
+  - This vectorizes the centroid lookup before KDTree query
+
+FUNCTION 5: join_complaints_to_traffic(complaints_df, traffic_df,
+                                        district_bounds_path) -> pd.DataFrame
+  - Load district bounds
+  - Build complaint coordinate array using build_complaint_coordinates()
+  - Build KDTree from traffic checkpoint coordinates:
+      checkpoint_coords = traffic_df[['Lat', 'Lng']].values
+      tree = KDTree(checkpoint_coords)
+  - Query tree: distances, indices = tree.query(complaint_coords, k=1)
+    distances here are Euclidean in lat/lng degrees — convert to km:
+      km_distances = distances * 111.0  (1 degree ≈ 111 km approximation)
+  - Map each complaint to its nearest checkpoint:
+      nearest checkpoint columns to add to complaints_df:
+        nearest_checkpoint_id    (str, e.g. "CP_01")
+        checkpoint_road_name     (str, เส้นทาง)
+        checkpoint_location      (str, ตำแหน่งติดตั้งเครื่องวัด)
+        checkpoint_distance_km   (float, 1 decimal)
+        traffic_multiplier       (float)
+        daily_vehicle_count      (int, รวมต่อวัน)
+        weighted_volume          (float)
+        checkpoint_lat           (float)
+        checkpoint_lng           (float)
+  - Print: "Spatial join complete. N complaints matched."
+  - Print: "Mean distance to nearest checkpoint: X.X km"
+  - Print per-district complaint counts
+  - Return joined DataFrame
+
+FUNCTION 6: run_spatial_join(complaints_path, traffic_path, district_bounds_path) -> pd.DataFrame
+  - Load both CSVs
+  - Run join_complaints_to_traffic()
+  - Save outputs/complaints_with_traffic.csv
+  - Return joined DataFrame
+
+══════════════════════════════════════════════════════════════
+MODULE 5 — src/cfs_engine.py
+══════════════════════════════════════════════════════════════
+
+PURPOSE: Compute CFS for all open complaints, rank them, produce output files.
+
+IMPORTS NEEDED: pandas, numpy, pathlib, json, datetime
+
+FUNCTION 1: compute_cfs(df) -> pd.DataFrame
+  - Filter: open_df = df[df['is_open'] == True].copy()
+  - cfs_score = severity_score * traffic_multiplier (round to 2 dp)
+  - cfs_tier:
+      cfs_score >= 24 → "critical"
+      cfs_score >= 15 → "high"
+      cfs_score >= 8  → "medium"
+      else            → "low"
+  - priority_rank = cfs_score rank descending, method='first' (no ties)
+  - Sort by priority_rank ascending
+  - Print tier distribution table
+  - Return open_df with new columns
+
+FUNCTION 2: compute_fifo_vs_cfs_comparison(df) -> pd.DataFrame
+  - df must have วันที่รับเรื่อง and priority_rank columns
+  - fifo_rank = rank by วันที่รับเรื่อง ascending (oldest=rank 1)
+  - rank_change = fifo_rank - priority_rank
+    (positive = CFS promotes this complaint; negative = CFS deprioritizes)
+  - rank_change_label:
+      rank_change > 100  → "major upgrade"
+      rank_change > 20   → "upgrade"
+      rank_change < -20  → "downgrade"
+      else               → "similar"
+  - Save outputs/fifo_vs_cfs_comparison.csv
+  - Print top 10 biggest rank upgrades with their details
+  - Print: "Biggest beneficiaries of CFS vs FIFO:"
+  - Return df with rank comparison columns
+
+FUNCTION 3: format_queue_record(row) -> dict
+  - Convert a single DataFrame row to the output record format:
+    {
+      "rank": int(row.priority_rank),
+      "complaint_id": str(row.เลขคำร้อง),
+      "complaint_type": str(row.ประเภทคำร้อง),
+      "description": str(row.เรื่องร้องทุกข์),
+      "district": str(row.เขต),
+      "community": str(row.ชุมชน),
+      "days_open": int(row.days_open) if not pd.isna(row.days_open) else 0,
+      "severity_score": int(row.severity_score),
+      "traffic_multiplier": float(row.traffic_multiplier),
+      "cfs_score": float(row.cfs_score),
+      "cfs_tier": str(row.cfs_tier),
+      "nearest_road": str(row.checkpoint_road_name),
+      "daily_vehicles": int(row.daily_vehicle_count),
+      "date_received": str(row.วันที่รับเรื่อง)
+    }
+
+FUNCTION 4: generate_queue_output(ranked_df) -> dict
+  - Apply format_queue_record to each row
+  - Result dict:
+    {
+      "generated_at": datetime.datetime.now().isoformat(),
+      "total_open": len(ranked_df),
+      "queue": [list of formatted records]
+    }
+  - Save outputs/ranked_queue.json (ensure_ascii=False, indent=2)
+  - Save outputs/ranked_queue.csv
+  - Print: "Queue saved. Top complaint: {type} | CFS: {score} | District: {district}"
+  - Return result dict
+
+FUNCTION 5: compute_statistics(df, full_df) -> dict
+  - df = open complaints with CFS; full_df = all complaints
+  - stats = {
+      "total_open": len(df),
+      "total_closed": int((full_df['is_open'] == False).sum()),
+      "critical_count": int((df['cfs_tier'] == 'critical').sum()),
+      "high_count": int((df['cfs_tier'] == 'high').sum()),
+      "medium_count": int((df['cfs_tier'] == 'medium').sum()),
+      "low_count": int((df['cfs_tier'] == 'low').sum()),
+      "mean_days_open": round(float(df['days_open'].dropna().mean()), 1),
+      "max_days_open": int(df['days_open'].dropna().max()),
+      "top_complaint_type": str(df['ประเภทคำร้อง'].value_counts().index[0]),
+      "top_affected_district": str(df['เขต'].value_counts().index[0]),
+      "mean_cfs_score": round(float(df['cfs_score'].mean()), 2),
+      "max_cfs_score": round(float(df['cfs_score'].max()), 2),
+      "generated_at": datetime.datetime.now().isoformat()
+    }
+  - Save outputs/statistics.json
+  - Return stats
+
+FUNCTION 6: run_cfs_engine(input_path) -> pd.DataFrame
+  - Load complaints_with_traffic.csv
+  - Run compute_cfs() → ranked_df
+  - Run compute_fifo_vs_cfs_comparison(ranked_df)
+  - Run generate_queue_output(ranked_df)
+  - Run compute_statistics(ranked_df, full_df)
+  - Return ranked_df
+
+══════════════════════════════════════════════════════════════
+MODULE 6 — src/dashboard.py
+══════════════════════════════════════════════════════════════
+
+PURPOSE: Build interactive Folium map + full HTML dashboard page.
+
+IMPORTS NEEDED: folium, pandas, json, pathlib, datetime
+
+CONSTANTS:
+  KK_CENTER = [16.432, 102.834]
+  TIER_COLORS = {
+    "critical": "#E24B4A",
+    "high":     "#EF9F27",
+    "medium":   "#378ADD",
+    "low":      "#639922"
+  }
+
+FUNCTION 1: create_map(ranked_queue_list, traffic_df) -> folium.Map
+  - Base map: folium.Map(location=KK_CENTER, zoom_start=13, tiles='OpenStreetMap')
+  - LAYER 1 — Traffic checkpoints:
+      feature_group = folium.FeatureGroup(name="Traffic checkpoints", show=True)
+      For each checkpoint row in traffic_df:
+        radius = 8 + int((รวมต่อวัน / 160892) * 16)  — scales 8–24px
+        folium.CircleMarker(
+          location=[Lat, Lng],
+          radius=radius,
+          color="#185FA5", fill=True, fill_color="#378ADD", fill_opacity=0.6,
+          popup=folium.Popup(html=checkpoint_popup_html(row), max_width=280)
+        ).add_to(feature_group)
+  - LAYER 2 — All open complaints:
+      feature_group2 = folium.FeatureGroup(name="Open complaints", show=True)
+      For each complaint in ranked_queue_list:
+        Use checkpoint_lat/lng as location (complaint has no direct coords)
+        color = TIER_COLORS[cfs_tier]
+        folium.CircleMarker(radius=6, color=color, fill=True, fill_opacity=0.75,
+          popup=complaint_popup_html(complaint)).add_to(feature_group2)
+  - LAYER 3 — Top 20 by CFS:
+      feature_group3 = folium.FeatureGroup(name="Top 20 priority", show=True)
+      For complaints with rank <= 20:
+        folium.Marker(icon=folium.Icon(color='red', icon='exclamation-sign'),
+          popup=complaint_popup_html(complaint)).add_to(feature_group3)
+  - Add all feature groups and folium.LayerControl() to map
+  - Return map
+
+HELPER: checkpoint_popup_html(row) -> str
+  Returns HTML string with: road name, location, total/day, tier, multiplier
+
+HELPER: complaint_popup_html(complaint_dict) -> str
+  Returns HTML string with: rank, type, description, district, days open, CFS score
+
+FUNCTION 2: create_dashboard_html(stats, ranked_queue_list, map_obj) -> str
+  Build and return a complete standalone HTML string.
+  Structure:
+  - <style> block: dark navy (#0D1B2A) background, teal (#1D9E75) accents,
+    white text, clean sans-serif font, responsive layout
+  - Header bar: "UrbanSync Khon Kaen" title + "CFS Dispatch Dashboard" subtitle
+    + timestamp showing when generated
+  - Metric cards row (4 cards):
+      Total Open | Critical | Mean CFS Score | Mean Days Open
+  - Map section: embed map using map.get_root().render() or map._repr_html_()
+    (wrap in a div with height: 500px)
+  - Top 20 table with columns:
+      # | Type | Description (truncated 40 chars) | District | Days Open
+        | Severity | × Multiplier | CFS Score | Tier badge
+    Tier badge colored by TIER_COLORS
+  - CFS tier distribution bar chart using pure HTML/CSS inline bars
+    (no JS charts — just divs with width set as percentage)
+  - Footer: "Generated by UrbanSync · BDI Hackathon 2026 · Team Lorem Ipsum"
+  All CSS must be inline or in a <style> block — no external CDN dependencies.
+  Must display correctly offline in a browser.
+
+FUNCTION 3: build_dashboard(queue_path, traffic_path, stats_path, output_path) -> None
+  - Load ranked_queue.json → queue_list
+  - Load traffic_enriched.csv → traffic_df
+  - Load statistics.json → stats
+  - Call create_map(queue_list[:200], traffic_df)
+    (limit to 200 complaint markers for map performance)
+  - Call create_dashboard_html(stats, queue_list[:20], map_obj)
+  - Write combined HTML to outputs/dashboard.html
+  - Print: "Dashboard saved → outputs/dashboard.html ({N} KB)"
+
+══════════════════════════════════════════════════════════════
+MODULE 7 — src/api.py
+══════════════════════════════════════════════════════════════
+
+PURPOSE: FastAPI server exposing CFS data for demo.
+
+IMPORTS NEEDED: fastapi, uvicorn, pathlib, json, pandas
+                fastapi.middleware.cors, fastapi.responses
+
+STARTUP: On lifespan startup, load these files into module-level variables:
+  _queue: list (from ranked_queue.json → "queue" key)
+  _stats: dict (from statistics.json)
+  _checkpoints: list of dicts (from traffic_enriched.csv)
+  If files missing: set variables to None, endpoints return 503.
+
+ENDPOINTS:
+
+GET /
+  Response: {"status": "ok", "project": "UrbanSync Khon Kaen",
+             "total_complaints": len(_queue) or 0}
+
+GET /stats
+  Response: _stats dict or 503
+
+GET /queue
+  Query params: limit:int=50, skip:int=0,
+                tier:str=None ("critical"/"high"/"medium"/"low"),
+                district:str=None
+  Filter _queue by tier and district if provided.
+  Response: {"total": total_after_filter, "returned": len(page),
+             "skip": skip, "limit": limit, "queue": page}
+
+GET /queue/{rank}
+  Find complaint with rank == rank in _queue.
+  Response: complaint dict or 404
+
+GET /checkpoints
+  Response: {"total": len(_checkpoints), "checkpoints": _checkpoints}
+
+GET /dashboard
+  Return FileResponse for outputs/dashboard.html.
+  If file missing: return 503.
+
+GET /stats/by-district
+  Group _queue by district, compute count and mean cfs_score per district.
+  Response: list of {"district": str, "count": int, "mean_cfs": float}
+
+GET /stats/by-type
+  Group _queue by complaint_type, compute count and mean cfs_score.
+  Response: list of {"type": str, "count": int, "mean_cfs": float}
+
+Add CORSMiddleware: allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+
+══════════════════════════════════════════════════════════════
+main.py
+══════════════════════════════════════════════════════════════
+
+PURPOSE: Orchestrate full pipeline end-to-end with CLI flags.
+
+IMPORTS NEEDED: argparse, pathlib, sys, time, subprocess
+                All src.* modules
+
+BEHAVIOR:
+
+1. Print ASCII banner:
+   ╔══════════════════════════════════════╗
+   ║   UrbanSync Khon Kaen Pipeline      ║
+   ║   BDI Hackathon 2026 · Smart City   ║
+   ╚══════════════════════════════════════╝
+
+2. Parse CLI arguments:
+   --data-dir        str  default="data"       root data directory
+   --output-dir      str  default="outputs"    output directory
+   --complaints      str  default="data/complaints.xlsx"
+   --traffic-csv     str  default="data/traffic_dashboard.csv"
+   --model           str  default="models/yolov8s-visdrone.pt"
+   --video-dir       str  default=None         if set, run video processing
+   --youtube-url     str  default=None         playlist URL to download first
+   --with-nlp        flag default=False        enable BERTopic topic modeling
+   --serve           flag default=False        start API after pipeline
+   --port            int  default=8000
+   --skip-video      flag default=False
+
+3. Create outputs/ directory.
+
+4. Check required files exist (complaints xlsx and traffic csv).
+   Exit with helpful message if missing.
+
+5. Run pipeline steps in order with timing:
+   [Step 1/5] Traffic data processing...
+     → src.traffic_processor.process_traffic_data()
+     If video_counts.csv exists in outputs/, run cross-validation too.
+   
+   [Step 2/5] Complaint processing...
+     → src.complaint_processor.process_complaints(run_nlp=args.with_nlp)
+   
+   [Step 3/5] Spatial join...
+     → src.spatial_join.run_spatial_join()
+   
+   [Step 4/5] CFS computation...
+     → src.cfs_engine.run_cfs_engine()
+   
+   [Step 5/5] Dashboard generation...
+     → src.dashboard.build_dashboard()
+   
+   If --video-dir:
+     [Step 0/5] Video processing (before everything else)...
+     If --youtube-url: download first via cv_pipeline.download_youtube_videos()
+     Then: src.cv_pipeline.process_all_videos()
+
+6. Print final summary:
+   ✓ Pipeline complete in X.Xs
+   ✓ Open complaints ranked: N
+   ✓ Critical: A | High: B | Medium: C | Low: D
+   ✓ Dashboard: outputs/dashboard.html
+   → Open dashboard in browser to view results.
+
+7. If --serve:
+   Print "Starting API on http://localhost:{port}"
+   uvicorn.run("src.api:app", host="0.0.0.0", port=args.port, reload=False)
+
+══════════════════════════════════════════════════════════════
+CODING STANDARDS — APPLY TO ALL FILES
+══════════════════════════════════════════════════════════════
+
+- Python 3.10+ syntax and type hints on all public functions
+- Docstrings on all functions (one-line summary + param/return notes)
+- Use pathlib.Path for all file paths — never os.path
+- Never crash on bad/missing data — use try/except per row where needed
+- Print progress messages so the user knows what is running
+- All Thai strings: ensure UTF-8 throughout (open files with encoding='utf-8')
+- All date handling: assume Buddhist Era input, convert to CE for computation
+- Outputs always saved to the outputs/ directory
+- No hardcoded absolute paths — use relative paths from project root
+- Each module is independently importable and testable
+- main.py is the only entry point — running individual src/*.py directly is not required
+- Do not use __name__ == "__main__" blocks in src/ files
