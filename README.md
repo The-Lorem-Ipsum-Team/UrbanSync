@@ -74,6 +74,12 @@ Run with local CCTV video processing:
 python main.py --video-dir data/videos
 ```
 
+Sample long CCTV videos by processing only the first N frames and extrapolating counts:
+
+```bash
+python main.py --video-dir data/videos --max-frames 3600
+```
+
 Run and then start the API:
 
 ```bash
@@ -149,7 +155,7 @@ pytest -q
 
 Current tests cover:
 
-- traffic multiplier thresholds
+- continuous traffic multiplier calculation and display tiers
 - Buddhist Era date parsing
 - severity lookup and keyword boosts
 - district-to-checkpoint spatial joins
@@ -157,13 +163,13 @@ Current tests cover:
 
 ## Current Status
 
-The codebase is fully implemented, verified end-to-end using our mock data generator (`generate_mock_data.py`), and all 5 tests are passing.
+The codebase is implemented and has been verified end-to-end using the mock data generator (`generate_mock_data.py`). The repository currently keeps generated `data/` and `outputs/` files out of git, so create or provide input data before running the pipeline.
 
 To verify the pipeline locally, you can run:
 1. `python generate_mock_data.py` (generates mock municipal data under `data/`)
 2. `python main.py --skip-video` (runs the full data-fusion pipeline and compiles the dashboard)
 
-Verification on actual real-world municipal datasets will be conducted once they are provided. Some optional dependencies may also need installation before using all features, especially:
+Verification on actual real-world municipal datasets is still pending until they are provided. Some optional dependencies may also need installation before using all features, especially:
 
 - `folium` for dashboard generation
 - `openpyxl` for complaint XLSX ingestion
@@ -175,6 +181,7 @@ Verification on actual real-world municipal datasets will be conducted once they
 config/                 scoring, district, and video config
 src/                    pipeline, dashboard, and API modules
 tests/                  focused core behavior tests
+generate_mock_data.py   local mock municipal data generator
 main.py                 pipeline CLI entry point
 requirements.txt        Python dependencies
 context.md              stable project brief

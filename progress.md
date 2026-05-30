@@ -65,8 +65,7 @@ Traffic multipliers:
 
 ## Verification
 
-- No application code has been generated yet.
-- No tests or runtime checks have been run yet.
+- Superseded by later sessions: application code, tests, mock data generation, and runtime checks have since been added.
 - Read back `AGENTS.md`, `progress.md`, and relevant parts of `prompt.txt`.
 - Attempted to access the provided Claude share URL, but the contents were not available from this environment.
 - Read back `AGENTS.md`, `progress.md`, and `context.md` before updating the session rules.
@@ -84,7 +83,7 @@ Context read:
 
 - Read `/home/papajittan/.codex/RTK.md`.
 - Read `progress.md`, `context.md`, and `prompt.txt`.
-- Confirmed the working directory is not a git repository, so commits are not available.
+- Earlier session note superseded: the repo is now initialized and on branch `zen-branch`.
 
 Initial environment checks:
 
@@ -152,7 +151,7 @@ Known blockers, assumptions, or risks:
 
 - End-to-end data-backed pipeline verification is still pending until the municipal data files are added.
 - Local environment is missing `folium`, `supervision`, and `openpyxl`; install from `requirements.txt` before running dashboard generation, video processing, or XLSX complaint ingestion.
-- The repository directory is not a git repository, so no commits were made.
+- Superseded repository note: the directory is now a git repository on branch `zen-branch`.
 
 ## Session Update - 2026-05-27 README
 
@@ -242,13 +241,57 @@ Files updated:
 
 Completed work:
 
-- **Resolved Issue 1 (Continuous Traffic Multiplier)**: Replaced step multiplier thresholds with a continuous linear interpolation formula between 30,000 (1.0x) and 130,000 (3.0x), eliminating artificial cliffs on nearly equal traffic roads.
+- **Resolved Issue 1 (Continuous Traffic Multiplier)**: Replaced step multiplier thresholds with the current continuous formula `clamp(1.0 + (รวมต่อวัน / 130,000) * 2.0, 1.0, 3.0)`, eliminating artificial cliffs on nearly equal traffic roads.
 - **Resolved Issue 2 (Honest Method Labeling)**: Added `counting_method` column to outputs and marked self-heal counts as `"self_heal_presence"` rather than `"tripwire"`, preserving data transparency. Added print warnings when self-healing is triggered.
 - **Resolved Issue 3 (Extrapolation Reliability Guard)**: Added an extrapolation guard in `cv_pipeline.py` that flags rows as `extrapolation_unreliable` and outputs warnings when the scaling factor exceeds $60\times$, reminding users that short samples estimate relative density, not absolute daily counts.
-- **Resolved Issue 4 (Severity Dominance Documentation)**: Documented the intentional choice where complaint severity naturally dominates traffic volume (10x vs 3x range). Added comment blocks in `cfs_engine.py`, injected the note in `statistics.json` and `ranked_queue.json`, and rendered a dark-green explanation alert card directly on the HTML dashboard.
+- **Resolved Issue 4 (Severity Dominance Documentation)**: Documented the intentional choice where complaint severity naturally dominates traffic volume (10x vs 3x range). Added comment blocks in `cfs_engine.py`, injected the note in `statistics.json`, and rendered an explanation alert card directly on the HTML dashboard.
 - **Adjusted Test Suite**: Updated `test_core_pipeline.py` multiplier thresholds to match the new continuous formulas. Ran `pytest` successfully (5 passed, 100% green).
 - **Verified End-to-End**: Re-ran mock data generation and pipeline execution; confirmed all 9 output files are beautifully compiled, with the new UI alert card correctly rendered in `outputs/dashboard.html`.
 
 Pending work:
 
 - Final review of proposal deck and video pitches against the current codebase.
+
+## Session Update - 2026-05-30 20:33 +07
+
+Current objective: update project markdown files to match the current repository state.
+
+Files updated:
+
+- `README.md`
+- `context.md`
+- `progress.md`
+
+Completed work:
+
+- Reconciled `context.md` with the implemented continuous traffic multiplier formula, mock data generator, video sampling support, current generated-artifact policy, git branch state, and remaining real-data/video verification gaps.
+- Updated `README.md` to mention `--max-frames`, clarify that generated `data/` and `outputs/` are not committed, describe continuous multiplier test coverage, and include `generate_mock_data.py` in the project structure.
+- Confirmed the working tree started clean on branch `zen-branch`.
+
+Pending work:
+
+- Real municipal dataset verification remains pending until actual `data/complaints.xlsx` and `data/traffic_dashboard.csv` are supplied.
+- Video processing verification remains pending until CCTV clips and model weights are supplied.
+
+Commands/checks run:
+
+- `rtk sed -n '1,260p' progress.md`
+- `rtk sed -n '1,260p' context.md`
+- `rtk sed -n '1,280p' README.md`
+- `rtk find . -maxdepth 3 -type f`
+- `rtk git status --short --branch`
+- `rtk git ls-files`
+- `rtk sed -n '1,220p' .gitignore`
+- `rtk sed -n '1,220p' requirements.txt`
+- `rtk sed -n '1,280p' tests/test_core_pipeline.py`
+- `rtk date '+%Y-%m-%d %H:%M %z'`
+- `rtk rg ... README.md context.md progress.md` stale-claim scan -> initially found old historical/superseded `progress.md` wording; those lines were updated.
+- Final stale-claim scan across `README.md`, `context.md`, and `progress.md` -> no matches after updates.
+- `rtk pytest -q` -> 5 passed after final documentation edits.
+- `rtk git diff -- README.md context.md progress.md` -> reviewed documentation-only diff.
+- `rtk git status --short` -> `README.md`, `context.md`, and `progress.md` modified.
+
+Known blockers, assumptions, or risks:
+
+- No generated `data/` or `outputs/` artifacts are currently present in the repository; this is expected because `.gitignore` excludes generated data and outputs.
+- The documentation reflects implemented code and prior mock-data verification, not fresh real-data verification.

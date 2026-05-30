@@ -78,12 +78,22 @@ Closed status:
 
 Complaint severity comes from `config/severity_lookup.json`, with keyword boosts from `config/severity_keywords.json`.
 
-Traffic multiplier comes from daily vehicle count:
+Traffic multiplier is computed from daily vehicle count with a continuous linear scale:
+
+```text
+traffic_multiplier = clamp(1.0 + (รวมต่อวัน / 130,000) * 2.0, 1.0, 3.0)
+```
+
+The continuous formula replaced the original step-only multiplier thresholds so nearly equal traffic volumes do not jump across artificial priority cliffs.
+
+Traffic tier labels are still assigned for display and filtering:
 
 - `>130,000`: `critical`, multiplier `3.0`
-- `80,000-130,000`: `high`, multiplier `2.0`
-- `30,000-80,000`: `medium`, multiplier `1.5`
-- `<30,000`: `low`, multiplier `1.0`
+- `80,000-130,000`: `high`
+- `30,000-80,000`: `medium`
+- `<30,000`: `low`
+
+Complaint severity has a wider range than traffic multiplier by design. Severity is the primary dispatch signal, and traffic volume acts as a strong location multiplier and tie-breaker between similarly severe complaints.
 
 CFS tiers:
 
@@ -119,7 +129,7 @@ All files should be complete, runnable, and free of placeholders, `TODO`, and `p
 
 Expected flow:
 
-1. Optional video processing from local CCTV clips or a YouTube playlist.
+1. Optional video processing from local CCTV clips or a YouTube playlist, with `--max-frames` sampling support for long videos.
 2. Traffic data loading, cleanup, tiering, and optional video cross-validation.
 3. Complaint loading, Thai date parsing, open/closed classification, severity scoring, resolution baseline, and optional topic modeling.
 4. Spatial join from complaint district centroids to nearest traffic checkpoint.
@@ -131,19 +141,22 @@ Expected flow:
 
 All generated outputs should go under `outputs/`.
 
-Expected outputs include:
+Core outputs include:
 
-- `outputs/video_counts.csv`
 - `outputs/traffic_enriched.csv`
 - `outputs/complaints_enriched.csv`
 - `outputs/resolution_baseline.json`
-- `outputs/complaint_topics.csv`
 - `outputs/complaints_with_traffic.csv`
 - `outputs/fifo_vs_cfs_comparison.csv`
 - `outputs/ranked_queue.json`
 - `outputs/ranked_queue.csv`
 - `outputs/statistics.json`
 - `outputs/dashboard.html`
+
+Optional outputs include:
+
+- `outputs/video_counts.csv`
+- `outputs/complaint_topics.csv`
 
 ## Dashboard
 
@@ -180,6 +193,15 @@ FastAPI endpoints expected by the prompt:
 
 The API should load generated output files on startup and return `503` when required files are missing.
 
+## Mock Data
+
+`generate_mock_data.py` creates realistic local test inputs:
+
+- `data/traffic_dashboard.csv`
+- `data/complaints.xlsx`
+
+These generated data files are intentionally ignored by git. Use them for local end-to-end verification when real municipal datasets are unavailable.
+
 ## Implementation Standards
 
 - Python 3.10+
@@ -208,26 +230,30 @@ Important local rules:
 
 ## Current State
 
-As of the 2026-05-27 implementation session:
+As of the 2026-05-30 markdown update:
 
 - The required config files, Python modules, `requirements.txt`, and `main.py` have been generated.
+- `generate_mock_data.py` exists for creating local mock municipal datasets.
 - Focused tests exist under `tests/` for traffic tiering, Thai date parsing, severity scoring, spatial joining, and CFS queue output.
-- Core modules are importable in the local environment.
-- The full pipeline has not been run end-to-end because the required data files are not present in the repository:
-  - `data/complaints.xlsx`
-  - `data/traffic_dashboard.csv`
-- The local environment is missing some optional dependencies listed in `requirements.txt`, including `folium`, `supervision`, and `openpyxl`.
+- The full pipeline has previously been verified end-to-end with mock data, including dashboard and API startup.
+- The repository currently does not contain generated `data/` or `outputs/` files; they are ignored by git.
+- Real municipal dataset verification is still pending until those files are supplied.
+- Video processing verification is still pending until CCTV clips and model weights are supplied.
+- The repository is now a git repository on branch `zen-branch`.
 
 ## Next Best Step
 
-Install the full dependencies, add the municipal datasets under `data/`, then run:
+For mock-data verification, run:
 
 ```bash
-rtk python main.py --skip-video
+python generate_mock_data.py
+python main.py --skip-video
 ```
 
-After data-backed verification succeeds, open `outputs/dashboard.html` and optionally start the API with:
+For real-data verification, add the municipal datasets under `data/`, then run `python main.py --skip-video`.
+
+After pipeline verification succeeds, open `outputs/dashboard.html` and optionally start the API with:
 
 ```bash
-rtk python main.py --skip-video --serve
+python main.py --skip-video --serve
 ```
