@@ -365,10 +365,7 @@ def process_video(
             for pts in [poly_1_pts, poly_2_pts]
         ]
         
-        lines = [
-            [(576, 350), (576, 470)],   # Lane 1
-            [(1344, 624), (1344, 884)], # Lane 2
-        ]
+        lines = [line_a, line_b]
         lane_groups = ['A', 'B']
         
     else:
