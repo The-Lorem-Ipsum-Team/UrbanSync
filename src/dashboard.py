@@ -268,16 +268,124 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
     total_cars = int(traffic_df["Car"].sum()) if not traffic_df.empty else 0
     total_motos = int(traffic_df["Motorcycle"].sum()) if not traffic_df.empty else 0
     total_trucks = int(traffic_df["Truck"].sum()) if not traffic_df.empty else 0
-    total_vehicles_class = max(total_cars + total_motos + total_trucks, 1)
+    total_buses = int(traffic_df["Bus"].sum()) if not traffic_df.empty and "Bus" in traffic_df.columns else 0
+    total_vehicles_class = max(total_cars + total_motos + total_trucks + total_buses, 1)
     car_pct = (total_cars / total_vehicles_class) * 100
     moto_pct = (total_motos / total_vehicles_class) * 100
     truck_pct = (total_trucks / total_vehicles_class) * 100
+    bus_pct = (total_buses / total_vehicles_class) * 100
 
     # ── Flow analysis ──
     hour_col = "คัน/ชั่วโมง" if "คัน/ชั่วโมง" in traffic_df.columns else "hourly_throughput"
     high_load_count = int((traffic_df[hour_col] > 6000).sum()) if not traffic_df.empty and hour_col in traffic_df.columns else 0
-    top_5_flow = traffic_df.sort_values(hour_col, ascending=False).head(5) if not traffic_df.empty and hour_col in traffic_df.columns else pd.DataFrame()
-    bottom_5_flow = traffic_df.sort_values(hour_col, ascending=True).head(5) if not traffic_df.empty and hour_col in traffic_df.columns else pd.DataFrame()
+    
+    flow_df = traffic_df.sort_values(hour_col, ascending=False).reset_index(drop=True) if not traffic_df.empty and hour_col in traffic_df.columns else pd.DataFrame()
+    
+    peak_count = 0
+    mod_count = 0
+    off_count = 0
+    busiest_road = "N/A"
+    busiest_val = 0
+    quietest_road = "N/A"
+    quietest_val = 0
+    
+    chart_1_html_parts = []
+    tier_totals = {
+        "PEAK": {"Car": 0, "Motorcycle": 0, "Truck": 0, "Bus": 0},
+        "MODERATE": {"Car": 0, "Motorcycle": 0, "Truck": 0, "Bus": 0},
+        "OFF-PEAK": {"Car": 0, "Motorcycle": 0, "Truck": 0, "Bus": 0}
+    }
+    
+    if not flow_df.empty:
+        max_flow = max(flow_df[hour_col].max(), 1)
+        busiest_row = flow_df.iloc[0]
+        busiest_road = f"{busiest_row.get('เส้นทาง', '')} ({busiest_row.get('ตำแหน่งติดตั้งเครื่องวัด', '')})"
+        busiest_val = int(busiest_row[hour_col])
+        
+        quietest_row = flow_df.iloc[-1]
+        quietest_road = f"{quietest_row.get('เส้นทาง', '')} ({quietest_row.get('ตำแหน่งติดตั้งเครื่องวัด', '')})"
+        quietest_val = int(quietest_row[hour_col])
+        
+        for idx, row in flow_df.iterrows():
+            val = int(row[hour_col])
+            road_name = str(row.get('เส้นทาง', ''))
+            loc_name = str(row.get('ตำแหน่งติดตั้งเครื่องวัด', ''))
+            
+            # Determine color and tier
+            if val > 6000:
+                color = "#E24B4A"
+                tier_label = "PEAK"
+                peak_count += 1
+            elif val >= 3000:
+                color = "#EF9F27"
+                tier_label = "MODERATE"
+                mod_count += 1
+            else:
+                color = "#639922"
+                tier_label = "OFF-PEAK"
+                off_count += 1
+                
+            # Aggregate for Chart 2
+            tier_totals[tier_label]["Car"] += int(row.get("Car", 0))
+            tier_totals[tier_label]["Motorcycle"] += int(row.get("Motorcycle", 0))
+            tier_totals[tier_label]["Truck"] += int(row.get("Truck", 0))
+            tier_totals[tier_label]["Bus"] += int(row.get("Bus", 0))
+            
+            # Chart 1 bar
+            pct_w = (val / max_flow) * 100
+            chart_1_html_parts.append(
+                f"<div class='flow-bar-row' style='margin-bottom:8px; display:flex; align-items:center; font-size:12px;'>"
+                f"  <span style='width:220px; color:#E8F4F8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;' title='{road_name} - {loc_name}'>{idx+1}. {road_name} ({loc_name})</span>"
+                f"  <div style='flex-grow:1; background:#1E293B; height:12px; border-radius:3px; margin:0 12px; overflow:hidden; position:relative;'>"
+                f"    <div style='width:{pct_w:.1f}%; background:{color}; height:100%; border-radius:3px;'></div>"
+                f"  </div>"
+                f"  <span style='width:90px; text-align:right; font-weight:700; color:{color}'>{val:,} / hr</span>"
+                f"</div>"
+            )
+            
+    chart_1_html = "".join(chart_1_html_parts)
+    
+    chart_2_html_parts = []
+    for tier in ["PEAK", "MODERATE", "OFF-PEAK"]:
+        t_car = tier_totals[tier]["Car"]
+        t_mc = tier_totals[tier]["Motorcycle"]
+        t_tr = tier_totals[tier]["Truck"]
+        t_bu = tier_totals[tier]["Bus"]
+        t_sum = max(t_car + t_mc + t_tr + t_bu, 1)
+        
+        car_p = (t_car / t_sum) * 100
+        mc_p = (t_mc / t_sum) * 100
+        tr_p = (t_tr / t_sum) * 100
+        bu_p = (t_bu / t_sum) * 100
+        
+        tier_color = "#E24B4A" if tier == "PEAK" else "#EF9F27" if tier == "MODERATE" else "#639922"
+        
+        div_car = f'<div style="width:{car_p:.1f}%; background:#1D9E75;" title="Cars: {car_p:.1f}%"></div>' if car_p > 0 else ''
+        div_mc = f'<div style="width:{mc_p:.1f}%; background:#EF9F27;" title="Motorcycles: {mc_p:.1f}%"></div>' if mc_p > 0 else ''
+        div_tr = f'<div style="width:{tr_p:.1f}%; background:#378ADD;" title="Trucks: {tr_p:.1f}%"></div>' if tr_p > 0 else ''
+        div_bu = f'<div style="width:{bu_p:.1f}%; background:#8B5CF6;" title="Buses: {bu_p:.1f}%"></div>' if bu_p > 0 else ''
+
+        chart_2_html_parts.append(
+            f"<div style='margin-bottom:20px;'>"
+            f"  <div style='display:flex; justify-content:space-between; align-items:center; font-size:12px; font-weight:700; margin-bottom:6px;'>"
+            f"    <span style='color:{tier_color}'>{tier} TIER</span>"
+            f"    <span style='color:#5A7A90'>Total Vehicles: {t_sum:,}</span>"
+            f"  </div>"
+            f"  <div style='display:flex; height:24px; border-radius:4px; overflow:hidden; background:#1E293B;'>"
+            f"    {div_car}"
+            f"    {div_mc}"
+            f"    {div_tr}"
+            f"    {div_bu}"
+            f"  </div>"
+            f"  <div style='display:flex; gap:12px; font-size:11px; color:#A0AEC0; margin-top:4px;'>"
+            f"    <span>🚗 Car: {car_p:.1f}%</span>"
+            f"    <span>🏍 MC: {mc_p:.1f}%</span>"
+            f"    <span>🚛 Truck: {tr_p:.1f}%</span>"
+            f"    <span>🚌 Bus: {bu_p:.1f}%</span>"
+            f"  </div>"
+            f"</div>"
+        )
+    chart_2_html = "".join(chart_2_html_parts)
 
     # ── Serialised data ──
     traffic_json = traffic_df.to_json(orient="records", force_ascii=False)
@@ -322,23 +430,16 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
         video_rows.append("<tr><td colspan='6' style='text-align:center;color:#5A7A90;padding:20px;'>"
                           "Run --video-dir to populate CCTV cross-validation data</td></tr>")
 
-    # ── Flow table rows ──
-    flow_rows = []
-    if not top_5_flow.empty:
-        for idx, (_, row) in enumerate(top_5_flow.iterrows()):
-            flow_rows.append(
-                f"<tr><td><span style='color:#E24B4A;font-weight:700'>Peak #{idx+1}</span></td>"
-                f"<td>{html.escape(str(row['เส้นทาง']))}</td>"
-                f"<td><b style='color:#E24B4A'>{int(row[hour_col]):,}</b></td>"
-                f"<td><span class='badge' style='background:#E24B4A'>High Load</span></td></tr>"
-            )
-        for idx, (_, row) in enumerate(bottom_5_flow.iterrows()):
-            flow_rows.append(
-                f"<tr><td><span style='color:#1D9E75;font-weight:700'>Low #{idx+1}</span></td>"
-                f"<td>{html.escape(str(row['เส้นทาง']))}</td>"
-                f"<td><b style='color:#1D9E75'>{int(row[hour_col]):,}</b></td>"
-                f"<td><span class='badge' style='background:#1D9E75'>Off-Peak</span></td></tr>"
-            )
+    # ── Load ranked queue ──
+    queue_path = output_path.parent / "ranked_queue.json"
+    queue_list = []
+    if queue_path.exists():
+        try:
+            queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+            queue_list = queue_payload.get("queue", [])
+        except Exception:
+            pass
+    queue_json = json.dumps(queue_list[:200], ensure_ascii=False)
 
     tabs = [
         ("t-overview",  "📊", "Overview"),
@@ -354,12 +455,14 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
     for i, (_, r) in enumerate(traffic_df.sort_values("รวมต่อวัน", ascending=False).iterrows()):
         tier_val = str(r.get("traffic_tier", "low"))
         tier_col = TIER_COLORS.get(tier_val, TIER_COLORS["low"])
+        bus_val = int(r.get("Bus", 0)) if "Bus" in r else 0
         class_table_rows.append(
             f"<tr><td>{i+1}</td>"
             f"<td>{html.escape(str(r.get('เส้นทาง','')))}</td>"
             f"<td>{int(r.get('Car',0)):,}</td>"
             f"<td>{int(r.get('Motorcycle',0)):,}</td>"
             f"<td>{int(r.get('Truck',0)):,}</td>"
+            f"<td>{bus_val:,}</td>"
             f"<td>{int(r.get('รวมต่อวัน',0)):,}</td>"
             f"<td><span class='badge' style='background:{tier_col}'>{tier_val}</span></td>"
             f"</tr>"
@@ -375,6 +478,7 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
 <meta name="description" content="UrbanSync Traffic Intelligence — BDI Hackathon 2026 Khon Kaen">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <style>{_get_shared_styles()}</style>
 </head>
 <body>
@@ -399,7 +503,8 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
       <p>
         Cars: <strong style="color:#1D9E75">{total_cars:,} ({car_pct:.1f}%)</strong><br>
         Motorcycles: <strong style="color:#EF9F27">{total_motos:,} ({moto_pct:.1f}%)</strong><br>
-        Trucks/Buses: <strong style="color:#378ADD">{total_trucks:,} ({truck_pct:.1f}%)</strong><br>
+        Trucks: <strong style="color:#378ADD">{total_trucks:,} ({truck_pct:.1f}%)</strong><br>
+        Buses: <strong style="color:#8B5CF6">{total_buses:,} ({bus_pct:.1f}%)</strong><br>
         Total classified: <strong>{total_vehicles_class:,}</strong>
       </p>
     </div>
@@ -437,9 +542,14 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
         <span class="bar-value">{total_motos:,} ({moto_pct:.1f}%)</span>
       </div>
       <div class="bar-row">
-        <span class="bar-label">🚛 Trucks / Buses</span>
+        <span class="bar-label">🚛 Trucks</span>
         <div class="bar-track"><div class="bar-fill" style="width:{truck_pct:.1f}%;background:#378ADD"></div></div>
         <span class="bar-value">{total_trucks:,} ({truck_pct:.1f}%)</span>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">🚌 Buses</span>
+        <div class="bar-track"><div class="bar-fill" style="width:{bus_pct:.1f}%;background:#8B5CF6"></div></div>
+        <span class="bar-value">{total_buses:,} ({bus_pct:.1f}%)</span>
       </div>
     </div>
     <div class="info-box" style="align-self:start">
@@ -450,7 +560,7 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
   <h2 class="section-hd" style="margin-top:4px">Per-Checkpoint Classification</h2>
   <div class="tbl-wrap">
     <table>
-      <thead><tr><th>#</th><th>Road</th><th>Cars</th><th>Motorcycles</th><th>Trucks</th><th>Total/Day</th><th>Tier</th></tr></thead>
+      <thead><tr><th>#</th><th>Road</th><th>Cars</th><th>Motorcycles</th><th>Trucks</th><th>Buses</th><th>Total/Day</th><th>Tier</th></tr></thead>
       <tbody>
         {class_table_html}
       </tbody>
@@ -462,17 +572,63 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
 <!-- ── FLOW ── -->
 <div class="panel" id="t-flow">
   <h2 class="section-hd">Traffic Flow Analysis — Peak vs Off-Peak</h2>
-  <p style="color:#5A7A90;font-size:13px;margin-bottom:16px">
-    <strong style="color:#E24B4A">{high_load_count}</strong> checkpoint(s) exceed 6,000 vehicles/hour (peak overload threshold).
-    Full time-series analysis requires multi-hour CCTV processing.
-  </p>
-  <div class="tbl-wrap">
-    <table>
-      <thead><tr><th>Load Rank</th><th>Road Name</th><th>Vehicles / Hour</th><th>Pattern</th></tr></thead>
-      <tbody>{"".join(flow_rows)}</tbody>
-    </table>
+  
+  <div class="cards" style="margin-bottom:20px">
+    <div class="card" style="border-left:4px solid #E24B4A">
+      <h3>Peak Checkpoints</h3>
+      <b>{peak_count}</b>
+      <small>&gt; 6,000 / hr</small>
+    </div>
+    <div class="card" style="border-left:4px solid #EF9F27">
+      <h3>Moderate Checkpoints</h3>
+      <b>{mod_count}</b>
+      <small>3,000 - 6,000 / hr</small>
+    </div>
+    <div class="card" style="border-left:4px solid #639922">
+      <h3>Off-Peak Checkpoints</h3>
+      <b>{off_count}</b>
+      <small>&lt; 3,000 / hr</small>
+    </div>
   </div>
-  <p class="pfooter">UrbanSync · BDI Hackathon 2026</p>
+  
+  <div class="cards" style="margin-bottom:24px; grid-template-columns: 1fr 1fr">
+    <div class="card" style="text-align:left; display:flex; flex-direction:column; justify-content:center">
+      <h3 style="font-size:12px;color:#5A7A90">🔥 Busiest Location</h3>
+      <b style="font-size:16px;color:#E24B4A;margin:4px 0">{html.escape(busiest_road)}</b>
+      <small style="font-size:13px;font-weight:700">{busiest_val:,} vehicles / hour</small>
+    </div>
+    <div class="card" style="text-align:left; display:flex; flex-direction:column; justify-content:center">
+      <h3 style="font-size:12px;color:#5A7A90">🍃 Quietest Location</h3>
+      <b style="font-size:16px;color:#639922;margin:4px 0">{html.escape(quietest_road)}</b>
+      <small style="font-size:13px;font-weight:700">{quietest_val:,} vehicles / hour</small>
+    </div>
+  </div>
+
+  <div class="g2" style="margin-bottom:24px">
+    <div class="info-box" style="padding:20px; flex-grow:1">
+      <h3 style="margin-bottom:16px; font-size:14px; text-transform:uppercase; letter-spacing:0.5px">📊 Chart 1 — Checkpoint Hourly Flow Rates</h3>
+      <div style="max-height:480px; overflow-y:auto; padding-right:8px">
+        {chart_1_html}
+      </div>
+    </div>
+    <div class="info-box" style="padding:20px; min-width:320px">
+      <h3 style="margin-bottom:16px; font-size:14px; text-transform:uppercase; letter-spacing:0.5px">🚗 Chart 2 — Fleet Breakdown by Peak Tier</h3>
+      {chart_2_html}
+      
+      <div style="background:#1E293B; padding:12px; border-radius:6px; margin-top:20px; border-left:3px solid #378ADD">
+        <h4 style="margin:0 0 6px 0; font-size:12px; color:#E8F4F8">💡 Observation</h4>
+        <p style="margin:0; font-size:11px; color:#94A3B8; line-height:1.4">
+          Peak checkpoints have a higher proportion of heavy vehicles (Trucks and Buses) which contribute significantly to road damage and traffic bottlenecking.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div style="background:#131B2E; border:1px solid #1E293B; border-radius:6px; padding:12px; margin-bottom:20px; font-size:11px; color:#5A7A90">
+    <strong>⚠️ Note:</strong> Full time-series analysis requires multi-hour video with burned-in timestamps. Current analysis uses daily average hourly throughput from KK Traffic Dashboard.
+  </div>
+
+  <p class="pfooter">UrbanSync · BDI Hackathon 2026 · Smart City Track</p>
 </div>
 
 <!-- ── INTERSECTIONS ── -->
@@ -517,6 +673,7 @@ function showTab(id) {{
 
 var trafficData = {traffic_json};
 var videoData   = {video_json};
+var queueData   = {queue_json};
 
 function initMap() {{
     if(_mapReady) return; _mapReady=true;
@@ -524,6 +681,42 @@ function initMap() {{
     window._lmap = lmap;
     L.tileLayer('https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png',{{attribution:'&copy; CartoDB'}}).addTo(lmap);
 
+    // LAYER A — Traffic Congestion Heatmap
+    var congestionPoints = [];
+    trafficData.forEach(function(r) {{
+        if (r.Lat && r.Lng) {{
+            var val = (r['\u0e23\u0e27\u0e21\u0e15\u0e48\u0e2d\u0e27\u0e31\u0e19'] || 0) / 160892.0;
+            congestionPoints.push([r.Lat, r.Lng, val]);
+        }}
+    }});
+    var trafficHeat = L.heatLayer(congestionPoints, {{
+        radius: 35,
+        blur: 25,
+        maxZoom: 15,
+        max: 1.0,
+        gradient: {{0.2: '#639922', 0.5: '#EF9F27', 0.8: '#E24B4A'}}
+    }});
+
+    // LAYER B — CFS Complaint Heatmap
+    var complaintPoints = [];
+    if (typeof queueData !== 'undefined') {{
+        queueData.forEach(function(r) {{
+            if (r.checkpoint_lat && r.checkpoint_lng) {{
+                var val = (r.cfs_score || 0) / 30.0;
+                complaintPoints.push([r.checkpoint_lat, r.checkpoint_lng, val]);
+            }}
+        }});
+    }}
+    var complaintHeat = L.heatLayer(complaintPoints, {{
+        radius: 30,
+        blur: 20,
+        maxZoom: 15,
+        max: 1.0,
+        gradient: {{0.3: '#378ADD', 0.6: '#EF9F27', 1.0: '#E24B4A'}}
+    }});
+
+    // Markers layers
+    var checkpointMarkers = [];
     var tc={{"critical":"#E24B4A","high":"#EF9F27","medium":"#378ADD","low":"#639922"}};
     function esc(s){{return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'';}}
 
@@ -538,13 +731,17 @@ function initMap() {{
             '<tr><td><b>Cars</b></td><td>'+(r.Car||0).toLocaleString()+'</td></tr>'+
             '<tr><td><b>Motorcycles</b></td><td>'+(r.Motorcycle||0).toLocaleString()+'</td></tr>'+
             '<tr><td><b>Trucks</b></td><td>'+(r.Truck||0).toLocaleString()+'</td></tr>'+
+            '<tr><td><b>Buses</b></td><td>'+(r.Bus||0).toLocaleString()+'</td></tr>'+
             '<tr><td><b>Total/Day</b></td><td>'+(r['\u0e23\u0e27\u0e21\u0e15\u0e48\u0e2d\u0e27\u0e31\u0e19']||0).toLocaleString()+'</td></tr>'+
             '<tr><td><b>Tier</b></td><td><span style="background:'+col+';padding:2px 6px;border-radius:4px;color:#fff;font-size:11px;">'+r.traffic_tier+'</span></td></tr>'+
             '<tr><td><b>Multiplier</b></td><td>'+(r.traffic_multiplier||1).toFixed(3)+'</td></tr>'+
             '</table>';
-        L.circleMarker([r.Lat,r.Lng],{{radius:rad,color:col,fillColor:col,fillOpacity:.65,weight:2}}).bindPopup(pop).addTo(lmap);
+        var marker = L.circleMarker([r.Lat,r.Lng],{{radius:rad,color:col,fillColor:col,fillOpacity:.65,weight:2}}).bindPopup(pop);
+        checkpointMarkers.push(marker);
     }});
+    var checkpointLayer = L.layerGroup(checkpointMarkers).addTo(lmap);
 
+    var videoMarkers = [];
     var vc={{"Highground":[16.4489,102.8431],"Sideway":[16.4312,102.8251],"Intersection":[16.4234,102.8315]}};
     videoData.forEach(function(r){{
         var c=vc[r.video_id]; if(!c) return;
@@ -552,11 +749,24 @@ function initMap() {{
             '<tr><td><b>Road</b></td><td>'+esc(r.location_name)+'</td></tr>'+
             '<tr><td><b>Bidirectional</b></td><td>'+(r.bidirectional_total||0).toLocaleString()+'</td></tr>'+
             '<tr><td><b>Cars</b></td><td>'+(r.car_count||0).toLocaleString()+'</td></tr>'+
+            '<tr><td><b>Motorcycles</b></td><td>'+(r.motorcycle_count||0).toLocaleString()+'</td></tr>'+
             '<tr><td><b>Trucks</b></td><td>'+(r.truck_count||0).toLocaleString()+'</td></tr>'+
+            '<tr><td><b>Buses</b></td><td>'+(r.bus_count||0).toLocaleString()+'</td></tr>'+
             '<tr><td><b>Method</b></td><td>'+esc(r.counting_method)+'</td></tr>'+
             '</table>';
-        L.circleMarker(c,{{radius:14,color:'#1D9E75',fillColor:'#1D9E75',fillOpacity:.9,weight:3,dashArray:'4,4'}}).bindPopup(pop).addTo(lmap);
+        var marker = L.circleMarker(c,{{radius:14,color:'#1D9E75',fillColor:'#1D9E75',fillOpacity:.9,weight:3,dashArray:'4,4'}}).bindPopup(pop);
+        videoMarkers.push(marker);
     }});
+    var videoLayer = L.layerGroup(videoMarkers).addTo(lmap);
+
+    // Layer Control
+    var overlays = {{
+        "GPS Checkpoint Markers": checkpointLayer,
+        "CCTV Video Cams": videoLayer,
+        "Traffic Congestion Heatmap": trafficHeat,
+        "CFS Complaint Heatmap": complaintHeat
+    }};
+    L.control.layers(null, overlays, {{collapsed: false}}).addTo(lmap);
 }}
 </script>
 </body>

@@ -33,7 +33,8 @@ def generate_traffic_data(output_path: Path):
         car = random.randint(18913, 66220)
         motorcycle = random.randint(1667, 47205)
         truck = random.randint(2681, 19043)
-        total = car + motorcycle + truck
+        bus = random.randint(500, 4500)
+        total = car + motorcycle + truck + bus
         vph = int(total / random.uniform(18, 24))
         
         data.append({
@@ -45,6 +46,7 @@ def generate_traffic_data(output_path: Path):
             "Car": car,
             "Motorcycle": motorcycle,
             "Truck": truck,
+            "Bus": bus,
             "รวมต่อวัน": total,
             "คัน/ชั่วโมง": vph
         })
@@ -55,7 +57,7 @@ def generate_traffic_data(output_path: Path):
 
 
 def generate_complaints_data(output_path: Path):
-    """Generate mock complaints.xlsx with ~200 rows."""
+    """Generate mock complaints.xlsx with ~46189 rows."""
     departments = ["ส่วนงานสาธารณสุข", "ส่วนงานช่าง", "ส่วนงานจราจร", "ส่วนงานเทศกิจ", "ส่วนงานปกครอง"]
     divisions = ["ฝ่ายรักษาความสงบ", "ฝ่ายวิศวกรรมการจราจร", "ฝ่ายควบคุมอาคาร", "ฝ่ายสุขาภิบาล", "ฝ่ายบำรุงทาง"]
     
@@ -110,8 +112,8 @@ def generate_complaints_data(output_path: Path):
     statuses = ["รอช่างรับเรื่อง", "กำลังดำเนินการ", "อยู่ระหว่างการติดตาม", "เกินกำหนด", "ส่งต่อหน่วยงานอื่น", "ประเมินผลเสร็จสิ้น"]
     
     data = []
-    # Generate 200 records
-    for i in range(1, 201):
+    # Generate 46189 records
+    for i in range(1, 46190):
         dept = random.choice(departments)
         div = random.choice(divisions)
         ref_num = f"REQ-{2026:04d}{i:04d}"
@@ -179,12 +181,93 @@ def generate_complaints_data(output_path: Path):
     print(f"Generated mock complaints data -> {output_path}")
 
 
+def generate_mock_video_counts(output_path: Path):
+    """Generate mock outputs/video_counts.csv containing bus_count column for pipeline tests."""
+    data = [
+        {
+            "video_id": "Highground",
+            "location_name": "ถ.ศรีจันทร์ หน้า รร. ดอนบอสโก (จุดที่ 3)",
+            "direction_A_label": "tripwire_far",
+            "direction_B_label": "tripwire_near",
+            "direction_A_total": 1410,
+            "direction_B_total": 1411,
+            "bidirectional_total": 2821,
+            "car_count": 1800,
+            "motorcycle_count": 800,
+            "truck_count": 150,
+            "bus_count": 71,
+            "total_unique_vehicles": 2821,
+            "processed_frames": 1500,
+            "video_duration_seconds": 62.5,
+            "source_file": "data/videos/Highground.mp4",
+            "camera_orientation": "overhead",
+            "counting_method": "tripwire",
+            "extrapolation_factor": 49.5,
+            "extrapolation_reliable": True,
+            "sample_seconds": 62.5
+        },
+        {
+            "video_id": "Intersection",
+            "location_name": "ถ.มิตรภาพ สี่แยกสามเหลี่ยม (จุดที่ 4)",
+            "direction_A_label": "tripwire_left",
+            "direction_B_label": "tripwire_right",
+            "direction_A_total": 901,
+            "direction_B_total": 902,
+            "bidirectional_total": 1803,
+            "car_count": 1200,
+            "motorcycle_count": 500,
+            "truck_count": 80,
+            "bus_count": 23,
+            "total_unique_vehicles": 1803,
+            "processed_frames": 1500,
+            "video_duration_seconds": 62.5,
+            "source_file": "data/videos/Intersection.mp4",
+            "camera_orientation": "sideways",
+            "counting_method": "tripwire",
+            "extrapolation_factor": 47.4,
+            "extrapolation_reliable": True,
+            "sample_seconds": 62.5
+        },
+        {
+            "video_id": "Sideway",
+            "location_name": "ถ.เหล่านาดี หน้า ม.ขอนแก่น (จุดที่ 2)",
+            "direction_A_label": "tripwire_left",
+            "direction_B_label": "tripwire_right",
+            "direction_A_total": 106,
+            "direction_B_total": 107,
+            "bidirectional_total": 213,
+            "car_count": 150,
+            "motorcycle_count": 50,
+            "truck_count": 10,
+            "bus_count": 3,
+            "total_unique_vehicles": 213,
+            "processed_frames": 1500,
+            "video_duration_seconds": 62.5,
+            "source_file": "data/videos/Sideway.mp4",
+            "camera_orientation": "sideways",
+            "counting_method": "tripwire",
+            "extrapolation_factor": 30.4,
+            "extrapolation_reliable": True,
+            "sample_seconds": 62.5
+        }
+    ]
+    df = pd.DataFrame(data)
+    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    print(f"Generated mock video counts -> {output_path}")
+
+
 def main():
     data_dir = Path("data")
     data_dir.mkdir(parents=True, exist_ok=True)
     
     generate_traffic_data(data_dir / "traffic_dashboard.csv")
     generate_complaints_data(data_dir / "complaints.xlsx")
+    
+    # Generate video_counts.csv in outputs
+    outputs_dir = Path("outputs")
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    generate_mock_video_counts(outputs_dir / "video_counts.csv")
+    
     print("Mock data generation complete!")
 
 if __name__ == "__main__":

@@ -180,7 +180,7 @@ def load_tripwire_config(
 
 def _class_name(class_id: int) -> str | None:
     """Map COCO class IDs to UrbanSync vehicle labels."""
-    return {2: "Car", 3: "Motorcycle", 5: "Truck", 7: "Truck"}.get(int(class_id))
+    return {2: "Car", 3: "Motorcycle", 5: "Bus", 7: "Truck"}.get(int(class_id))
 
 
 def _count_classes(crossed: dict[int, str]) -> dict[str, int]:
@@ -189,6 +189,7 @@ def _count_classes(crossed: dict[int, str]) -> dict[str, int]:
         "Car": sum(1 for value in crossed.values() if value == "Car"),
         "Motorcycle": sum(1 for value in crossed.values() if value == "Motorcycle"),
         "Truck": sum(1 for value in crossed.values() if value == "Truck"),
+        "Bus": sum(1 for value in crossed.values() if value == "Bus"),
     }
 
 
@@ -219,6 +220,7 @@ def process_video(
     max_frames: int | None = None,
     save_annotated: bool = True,
     live_display: bool = False,
+    demo_frames: bool = False,
 ) -> dict[str, Any]:
     """Process one video and return unique tripwire-crossing vehicle counts (scaled if sampled).
 
@@ -372,7 +374,7 @@ def process_video(
         
         # Frame copy for annotation
         frame = None
-        if save_annotated or live_display:
+        if save_annotated or live_display or demo_frames:
             frame = result.orig_img.copy()
 
         detections = sv.Detections.from_ultralytics(result)
@@ -484,7 +486,8 @@ def process_video(
             realtime_car = counts_a["Car"] + counts_b["Car"]
             realtime_moto = counts_a["Motorcycle"] + counts_b["Motorcycle"]
             realtime_truck = counts_a["Truck"] + counts_b["Truck"]
-            realtime_total = realtime_car + realtime_moto + realtime_truck
+            realtime_bus = counts_a.get("Bus", 0) + counts_b.get("Bus", 0)
+            realtime_total = realtime_car + realtime_moto + realtime_truck + realtime_bus
 
             # Draw HUD Display
             overlay = frame.copy()
@@ -498,7 +501,7 @@ def process_video(
             cv2.putText(frame, f"Total Vehicles: {realtime_total}", (50, 130), cv2.FONT_HERSHEY_DUPLEX, 0.65, (45, 212, 191), 2)
             cv2.putText(frame, f"  - Cars: {realtime_car}", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
             cv2.putText(frame, f"  - Motorcycles: {realtime_moto}", (50, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-            cv2.putText(frame, f"  - Trucks/Buses: {realtime_truck}", (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            cv2.putText(frame, f"  - Trucks: {realtime_truck} | Buses: {realtime_bus}", (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
             
             # Frame counter
             cv2.putText(frame, f"Frame: {processed_frames}", (50, 295), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (148, 163, 184), 1)
@@ -506,6 +509,11 @@ def process_video(
             # Write frame to video
             if save_annotated and video_writer is not None:
                 video_writer.write(frame)
+
+            if demo_frames and processed_frames == min(150, max_frames or 150):
+                demo_path = OUTPUT_DIR / f"demo_frame_{identifier}.jpg"
+                cv2.imwrite(str(demo_path), frame)
+                print(f"  ✓ Saved demo frame: {demo_path}")
 
             # Show live preview
             if live_display:
@@ -560,7 +568,8 @@ def process_video(
                 p1 = info1["last_pos"]
                 p2 = info2["first_pos"]
                 dist = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-                if dist < 120:
+                spatial_threshold = 120 * (frame_height / 1080)
+                if dist < spatial_threshold:
                     merged_map[tid2] = merged_map[tid1]
                     info1["last_frame"] = info2["last_frame"]
                     info1["last_pos"] = info2["last_pos"]
@@ -597,7 +606,8 @@ def process_video(
     car_crossings = counts_a["Car"] + counts_b["Car"]
     motorcycle_crossings = counts_a["Motorcycle"] + counts_b["Motorcycle"]
     truck_crossings = counts_a["Truck"] + counts_b["Truck"]
-    total_crossings = car_crossings + motorcycle_crossings + truck_crossings
+    bus_crossings = counts_a.get("Bus", 0) + counts_b.get("Bus", 0)
+    total_crossings = car_crossings + motorcycle_crossings + truck_crossings + bus_crossings
 
     # SELF-HEALING MODE — METRIC CHANGE
     # Tripwire geometry failed to capture crossings (horizontal road, tight intersection).
@@ -612,12 +622,14 @@ def process_video(
         car_count = int(round(sum(1 for info in valid_trackers.values() if info["class"] == "Car") * scaling_factor))
         motorcycle_count = int(round(sum(1 for info in valid_trackers.values() if info["class"] == "Motorcycle") * scaling_factor))
         truck_count = int(round(sum(1 for info in valid_trackers.values() if info["class"] == "Truck") * scaling_factor))
+        bus_count = int(round(sum(1 for info in valid_trackers.values() if info["class"] == "Bus") * scaling_factor))
         direction_a_total = int(round((len(valid_trackers) / 2) * scaling_factor))
         direction_b_total = int(round((len(valid_trackers) - len(valid_trackers) // 2) * scaling_factor))
     else:
         car_count = int(round(car_crossings * scaling_factor))
         motorcycle_count = int(round(motorcycle_crossings * scaling_factor))
         truck_count = int(round(truck_crossings * scaling_factor))
+        bus_count = int(round(bus_crossings * scaling_factor))
         direction_a_total = int(round(len(crossed_a_final) * scaling_factor))
         direction_b_total = int(round(len(crossed_b_final) * scaling_factor))
     
@@ -659,7 +671,8 @@ def process_video(
         "car_count": car_count,
         "motorcycle_count": motorcycle_count,
         "truck_count": truck_count,
-        "total_unique_vehicles": car_count + motorcycle_count + truck_count,
+        "bus_count": bus_count,
+        "total_unique_vehicles": car_count + motorcycle_count + truck_count + bus_count,
         "processed_frames": processed_frames,
         "video_duration_seconds": round(total_frames / fps, 2) if fps else 0.0,
         "source_file": str(source),
@@ -679,6 +692,7 @@ def process_all_videos(
     max_frames: int | None = None,
     save_annotated: bool = True,
     live_display: bool = False,
+    demo_frames: bool = False,
 ) -> pd.DataFrame:
     """Process all local video files, save outputs/video_counts.csv, and return a DataFrame."""
     try:
@@ -694,14 +708,14 @@ def process_all_videos(
     for file_path in tqdm(files, desc="Processing videos"):
         try:
             location = (video_location_map or {}).get(file_path.stem, file_path.stem)
-            rows.append(process_video(file_path, model_path, tripwire_config_path, video_id=file_path.stem, location_name=location, max_frames=max_frames, save_annotated=save_annotated, live_display=live_display))
+            rows.append(process_video(file_path, model_path, tripwire_config_path, video_id=file_path.stem, location_name=location, max_frames=max_frames, save_annotated=save_annotated, live_display=live_display, demo_frames=demo_frames))
         except Exception as exc:
             print(f"Video failed: {file_path.name}: {exc}")
     df = pd.DataFrame(rows)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUTPUT_DIR / "video_counts.csv", index=False, encoding="utf-8-sig")
     if not df.empty:
-        print(df[["location_name", "bidirectional_total", "car_count", "motorcycle_count", "truck_count"]].to_string(index=False))
+        print(df[["location_name", "bidirectional_total", "car_count", "motorcycle_count", "truck_count", "bus_count"]].to_string(index=False))
         tripwire_count = sum(1 for r in rows if r.get("counting_method") == "tripwire")
         selfheal_count = sum(1 for r in rows if r.get("counting_method") == "self_heal_presence")
         print(f"  Counting method: {tripwire_count} tripwire | {selfheal_count} self-heal")

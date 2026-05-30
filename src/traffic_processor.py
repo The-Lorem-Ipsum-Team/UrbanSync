@@ -27,7 +27,7 @@ def load_traffic_data(csv_path: str | Path) -> pd.DataFrame:
     df.columns = [str(col).strip() for col in df.columns]
     if "Lng" not in df.columns and "Lag" in df.columns:
         df = df.rename(columns={"Lag": "Lng"})
-    for column in ["Car", "Motorcycle", "Truck", "รวมต่อวัน"]:
+    for column in ["Car", "Motorcycle", "Truck", "Bus", "รวมต่อวัน"]:
         if column in df.columns:
             df[column] = _to_int_series(df[column])
     df["Lat"] = pd.to_numeric(df["Lat"], errors="coerce")
@@ -49,10 +49,13 @@ def compute_weighted_volume(df: pd.DataFrame) -> pd.DataFrame:
     traffic_tier column is retained for human-readable display only.
     """
     result = df.copy()
+    if "Bus" not in result.columns:
+        result["Bus"] = 0
     result["weighted_volume"] = (
         result["Car"].astype(float) * 1.0
         + result["Motorcycle"].astype(float) * 0.5
         + result["Truck"].astype(float) * 3.0
+        + result["Bus"].astype(float) * 2.5
     )
 
     # Continuous multiplier: 1.0 + (volume / 130_000) * 2.0, clamped [1.0, 3.0]
@@ -126,6 +129,10 @@ def cross_validate_with_video(traffic_df: pd.DataFrame, video_csv_path: str | Pa
         result["estimated_true_volume"] = result["รวมต่อวัน"].astype(int)
         return result
 
+    has_bus = "bus_count" in video_df.columns
+    if has_bus:
+        result["bus_total"] = 0
+
     candidates = result["เส้นทาง"].astype(str) + " " + result["ตำแหน่งติดตั้งเครื่องวัด"].astype(str)
     matches: list[dict[str, object]] = []
     for _, row in reliable_df.iterrows():
@@ -140,13 +147,18 @@ def cross_validate_with_video(traffic_df: pd.DataFrame, video_csv_path: str | Pa
         factor = float(np.clip(float(video_total) / float(dashboard_total), 0.5, 5.0))
         result.loc[matched_index, "matched_video_id"] = str(row.get("video_id", row.get("source_file", "")))
         result.loc[matched_index, "correction_factor"] = factor
-        matches.append(
-            {
-                "checkpoint": result.loc[matched_index, "checkpoint_id"],
-                "video": row.get("video_id", row.get("source_file", "")),
-                "correction_factor": round(factor, 2),
-            }
-        )
+        
+        match_entry = {
+            "checkpoint": result.loc[matched_index, "checkpoint_id"],
+            "video": row.get("video_id", row.get("source_file", "")),
+            "correction_factor": round(factor, 2),
+        }
+        if has_bus:
+            bus_val = int(row.get("bus_count", 0))
+            result.loc[matched_index, "bus_total"] = bus_val
+            match_entry["bus_count"] = bus_val
+            
+        matches.append(match_entry)
 
     mean_factor = float(result["correction_factor"].dropna().mean()) if result["correction_factor"].notna().any() else 1.0
     result["correction_factor"] = result["correction_factor"].fillna(mean_factor)

@@ -126,6 +126,7 @@ def compute_statistics(df: pd.DataFrame, full_df: pd.DataFrame) -> dict[str, Any
     """Compute summary dashboard/API statistics and save JSON."""
     days = df["days_open"].dropna() if "days_open" in df else pd.Series(dtype=float)
     stats = {
+        "total_complaints": len(full_df),
         "total_open": len(df),
         "total_closed": int((full_df["is_open"] == False).sum()),
         "critical_count": int((df["cfs_tier"] == "critical").sum()),
