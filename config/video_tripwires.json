@@ -18,8 +18,8 @@
   },
 
   "Sideway": {
-    "line_A": [[0.5, 0.55], [0.5, 0.85]],
-    "line_B": [[0.48, 0.15], [0.48, 0.45]],
+    "line_A": [[0.5, 0.15], [0.5, 0.46]],
+    "line_B": [[0.48, 0.46], [0.48, 0.85]],
     "direction_A_label": "rightbound",
     "direction_B_label": "leftbound",
     "_note": "Sideways street camera. Vertical tripwire at frame center. Adjust x (0.5) left/right if road is not centered in frame."
