@@ -604,6 +604,16 @@ def build_traffic_dashboard(traffic_path: Path, video_counts_path: Path, output_
     </div>
   </div>
 
+  <!-- SUMMARY ROW FOR JUDGES -->
+  <div style="background:#1E293B; border-radius:6px; padding:12px; margin-bottom:20px; font-size:12px; color:#E8F4F8; display:flex; justify-content:space-between; border-left:4px solid #EF9F27;">
+    <div>
+      Peak {peak_count} checkpoints | Moderate {mod_count} | Off-peak {off_count}
+    </div>
+    <div>
+      Busiest: {html.escape(busiest_road)} at {busiest_val:,}/hr | Quietest: {html.escape(quietest_road)} at {quietest_val:,}/hr
+    </div>
+  </div>
+
   <div class="g2" style="margin-bottom:24px">
     <div class="info-box" style="padding:20px; flex-grow:1">
       <h3 style="margin-bottom:16px; font-size:14px; text-transform:uppercase; letter-spacing:0.5px">📊 Chart 1 — Checkpoint Hourly Flow Rates</h3>
@@ -1222,11 +1232,87 @@ def create_dashboard_html(
             f"</tr>"
         )
 
+    manual_html = """
+<div class="panel" id="d-manual">
+  <h2 class="section-hd">Smart City Algorithmic Dispatch & Operations Manual</h2>
+  
+  <div class="g2" style="margin-bottom:20px">
+    <div class="info-box" style="padding:22px">
+      <h3 style="color:#8DE3C2;font-size:16px;margin-bottom:12px;border-bottom:1px solid #1D3D2F;padding-bottom:6px">📖 1. System Overview</h3>
+      <p style="font-size:13px;line-height:1.6;color:#C0DCE8">
+        UrbanSync is an advanced civic operations platform that fuses live transportation intelligence with municipal complaint dispatch systems. Historically, public works dispatches were managed strictly on a First-In-First-Out (FIFO) basis. While fair in appearance, FIFO ignores issue severity and the immense economic and public transit bottlenecks caused by failures near high-traffic intersections.<br><br>
+        By introducing the <strong>Civic Friction Score (CFS)</strong>, UrbanSync transforms public service operations from static backlog queues to high-performance, dynamic, Mobility-ROI (Return on Investment) prioritized schedules.
+      </p>
+    </div>
+    
+    <div class="info-box" style="padding:22px">
+      <h3 style="color:#8DE3C2;font-size:16px;margin-bottom:12px;border-bottom:1px solid #1D3D2F;padding-bottom:6px">🔢 2. Civic Friction Score Formulation</h3>
+      <p style="font-size:13px;line-height:1.6;color:#C0DCE8">
+        The Civic Friction Score acts as a multi-tier prioritization value. The mathematical engine is structured as follows:<br><br>
+        <span style="display:block;background:#0D1B2A;padding:12px;border-radius:6px;font-family:monospace;color:#1D9E75;font-weight:700;border:1px solid #1A2E42">
+          CFS Score = Severity Score &times; Traffic Multiplier
+        </span><br>
+        <strong>Severity Score (1.0 to 10.0)</strong> is derived from the complaint category lookup. It represents the safety and social urgency of the problem. High-severity keywords in the complaint description (e.g. "ชำรุด", "ทรุด", "น้ำท่วม") trigger algorithmic keyword boosts to dynamically raise the severity.<br><br>
+        <strong>Traffic Multiplier (1.000 to 3.000)</strong> acts as a continuous linear spatial weight based on the closest measurement checkpoint's daily volume. It resolves ties between similar severity complaints, prioritizing dispatches that impact the busiest roads.
+      </p>
+    </div>
+  </div>
+
+  <div class="info-box" style="margin-bottom:20px;padding:22px">
+    <h3 style="color:#8DE3C2;font-size:16px;margin-bottom:14px;border-bottom:1px solid #1D3D2F;padding-bottom:6px">❓ 3. Frequently Asked Questions (FAQ)</h3>
+    
+    <div style="margin-bottom:16px">
+      <h4 style="color:#8DE3C2;font-size:14px;margin-bottom:6px">Q: Why was Bus separated from Truck in the 2026 update?</h4>
+      <p style="font-size:13px;line-height:1.5;color:#C0DCE8">
+        In previous builds, heavy passenger vehicles (Buses) were grouped under the broad category of Trucks. In smart city traffic planning, this masks public transit density and delays city efforts to prioritize public bus corridors. In the 2026 build, Buses (COCO Class 5) are parsed separately from Trucks (COCO Class 7). Under the traffic volume calculation, Buses are weighted with a Passenger Car Unit (PCU) factor of 2.5, whereas Trucks are weighted at 3.0 and Motorcycles at 0.5. Separating Buses allows city managers to track public transit corridor throughput and ensure high CFS dispatch priority near major bus routes.
+      </p>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <h4 style="color:#8DE3C2;font-size:14px;margin-bottom:6px">Q: Why do we use a continuous linear multiplier instead of hard tier thresholds?</h4>
+      <p style="font-size:13px;line-height:1.5;color:#C0DCE8">
+        Hard tier thresholds (e.g., assigning a multiplier of 1.5 if volume &gt; 50k, and 1.0 otherwise) create step-discontinuities. Under a step-discontinuity, a road with 50,001 vehicles/day gets a massive boost, while a road with 49,999 vehicles/day gets none, despite having virtually identical traffic loads. A continuous linear scale (mapping volumes from city minimum to city maximum onto a 1.0–3.0 range) ensures that priority is smooth, monotonic, and mathematically defensible. Every additional vehicle detected incrementally increases the location's dispatch weight.
+      </p>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <h4 style="color:#8DE3C2;font-size:14px;margin-bottom:6px">Q: How does the system handle missing coordinates or data skewness in real-world samples?</h4>
+      <p style="font-size:13px;line-height:1.5;color:#C0DCE8">
+        Real-world data is skewed. For instance, the official KKNC complaints sample (ข้อมูลคำร้อง_sampled.xlsx) has highly skewed spatial distributions (143 complaints with unspecified districts, and skewed numbers across เขต 1, เขต 2, etc.). The spatial join engine handles this by calculating the distance to the nearest traffic checkpoint coordinates. If GPS coordinates for a complaint are missing, it defaults to the centroid of Khon Kaen or the closest municipal office coordinates to prevent dispatch drops. If the Bus column is missing in older legacy datasets, it defaults to 0, ensuring full backward compatibility.
+      </p>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <h4 style="color:#8DE3C2;font-size:14px;margin-bottom:6px">Q: What are the video cross-validation reliability guards?</h4>
+      <p style="font-size:13px;line-height:1.5;color:#C0DCE8">
+        To prevent short or corrupted video streams from distorting traffic statistics, the pipeline implements an extrapolation safety threshold (60.0x maximum). If the sample duration is less than 24 seconds, the extrapolation factor (86400 / duration) exceeds the threshold, and the system flags the measurement as unreliable. Furthermore, a camera orientation detection algorithm distinguishes sideways-looking cameras from overhead cameras by tracking vertical vs horizontal vector ratios of moving bounding boxes, applying custom tripwire margins to avoid double-counting.
+      </p>
+    </div>
+  </div>
+
+  <div class="info-box" style="margin-bottom:20px;padding:22px">
+    <h3 style="color:#8DE3C2;font-size:16px;margin-bottom:12px;border-bottom:1px solid #1D3D2F;padding-bottom:6px">🛠️ 4. Technical Architecture and Pipeline Flow</h3>
+    <p style="font-size:13px;line-height:1.6;color:#C0DCE8">
+      UrbanSync operates on a modular pipeline designed for low-latency batch processing:<br><br>
+      <strong>1. CV Pipeline:</strong> Runs YOLOv8 and BYTETracker on raw CCTV mp4 streams, performing spatial tripwire counting and direction detection.<br>
+      <strong>2. Traffic Processor:</strong> Enriches kktraffic dashboard CSV data with weighted volumes and continuous multipliers. Integrates video counts to cross-validate and adjust counts.<br>
+      <strong>3. Complaint Processor:</strong> Parses municipal complaints, handles Buddhist Era (BE) dates, assigns severity scores, and trains/loads resolution baseline parameters.<br>
+      <strong>4. Spatial Join:</strong> Conducts spherical KDTree distance joins to link each complaint to its nearest traffic checkpoint.<br>
+      <strong>5. CFS Engine:</strong> Combines spatial traffic weights and severity scores into the final prioritized queue.<br>
+      <strong>6. Dashboard Generator:</strong> Builds premium HTML dashboard files loaded with interactive high-performance Leaflet mapping, layered toggles, flow analysis, and operational intelligence.
+    </p>
+  </div>
+
+  <p class="pfooter">UrbanSync Operability Manual &middot; BDI Hackathon 2026 &middot; Smart City Track</p>
+</div>
+"""
+
     tabs = [
         ("d-overview", "📊", "Overview"),
         ("d-map",      "🗺️",  "Live Map"),
         ("d-queue",    "📌", "Dispatch Queue"),
         ("d-formula",  "🔢", "CFS Formula"),
+        ("d-manual",   "📖", "Dispatch Manual"),
     ]
 
     return f"""<!doctype html>
@@ -1335,6 +1421,8 @@ def create_dashboard_html(
   </div>
   <p class="pfooter">UrbanSync · BDI Hackathon 2026 · Smart City Track</p>
 </div>
+
+{manual_html}
 
 </div><!-- content-area -->
 </div><!-- app -->

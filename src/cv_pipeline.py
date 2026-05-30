@@ -273,6 +273,8 @@ def process_video(
     
     crossed_a: dict[int, str] = {}
     crossed_b: dict[int, str] = {}
+    crossed_A_bus: set[int] = set()
+    crossed_B_bus: set[int] = set()
     active_trackers: dict[int, dict[str, Any]] = {}
     processed_frames = 0
     previous_a = 0
@@ -444,9 +446,13 @@ def process_video(
                             if group == 'A':
                                 if tid not in crossed_a:
                                     crossed_a[tid] = vehicle_class
+                                if vehicle_class == 'Bus':
+                                    crossed_A_bus.add(tid)
                             else:
                                 if tid not in crossed_b:
                                     crossed_b[tid] = vehicle_class
+                                if vehicle_class == 'Bus':
+                                    crossed_B_bus.add(tid)
             
             # Draw supervision annotations on the frame
             if (save_annotated or live_display) and len(detections) > 0 and frame is not None:
@@ -600,6 +606,19 @@ def process_video(
     for tid in crossed_b:
         parent_tid = merged_map[tid]
         crossed_b_final[parent_tid] = resolved_classes[parent_tid]
+
+    # Deduplicate crossed_A_bus and crossed_B_bus sets
+    crossed_A_bus_final = set()
+    for tid in crossed_A_bus:
+        parent_tid = merged_map[tid]
+        if resolved_classes[parent_tid] == 'Bus':
+            crossed_A_bus_final.add(parent_tid)
+
+    crossed_B_bus_final = set()
+    for tid in crossed_B_bus:
+        parent_tid = merged_map[tid]
+        if resolved_classes[parent_tid] == 'Bus':
+            crossed_B_bus_final.add(parent_tid)
 
     counts_a = _count_classes(crossed_a_final)
     counts_b = _count_classes(crossed_b_final)

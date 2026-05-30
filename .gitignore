@@ -31,3 +31,8 @@ Thumbs.db
 
 # Scratch / temp
 verify_all.py
+
+# Large datasets and weights
+data/videos/
+*.pt
+
