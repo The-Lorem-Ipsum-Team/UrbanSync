@@ -916,6 +916,25 @@ def build_complaint_dashboard(
             f"<td><span style='color:{conf_color}'>{conf_txt} ({cnt} samples)</span></td></tr>"
         )
 
+    # ── Department prediction rows ──
+    dept_prediction_rows = []
+    if not complaints_df.empty and 'predicted_department' in complaints_df.columns:
+        top_types = complaints_df['ประเภทคำร้อง'].value_counts().head(10)
+        for comp_type, count in top_types.items():
+            matching_rows = complaints_df[complaints_df['ประเภทคำร้อง'] == comp_type]
+            if not matching_rows.empty:
+                sample_row = matching_rows.iloc[0]
+                pred_dept = str(sample_row.get('predicted_department', 'ไม่ระบุ'))
+                conf = float(sample_row.get('department_confidence', 0.0)) * 100
+                conf_color = "#1D9E75" if conf >= 70 else "#EF9F27" if conf >= 40 else "#5A7A90"
+                dept_prediction_rows.append(
+                    f"<tr><td>{html.escape(comp_type)}</td>"
+                    f"<td><span style='color:#8DE3C2;font-weight:700'>{html.escape(pred_dept)}</span></td>"
+                    f"<td><span class='badge' style='background:{conf_color}'>{conf:.0f}%</span></td></tr>"
+                )
+    dept_prediction_html = "".join(dept_prediction_rows)
+
+
     # ── NLP topic rows ──
     topic_rows = []
     if not topics_df.empty:
@@ -1085,8 +1104,22 @@ def build_complaint_dashboard(
       </table>
     </div>
   </div>
-  <p class="pfooter">* ETA estimated from historical mean resolution time per category · UrbanSync · BDI Hackathon 2026</p>
+  <p class="pfooter" style="margin-bottom:24px">* ETA estimated from historical mean resolution time per category · UrbanSync · BDI Hackathon 2026</p>
+
+  <h2 class="section-hd" style="margin-top:24px">C5 Predictive Model — Department Assignment Prediction</h2>
+  <div class="g2" style="grid-template-columns: 1fr">
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Complaint Type</th><th>Predicted Department</th><th>Model Confidence %</th></tr></thead>
+        <tbody>{dept_prediction_html or "<tr><td colspan='3' style='text-align:center;color:#5A7A90;padding:20px'>No department prediction data yet</td></tr>"}</tbody>
+      </table>
+    </div>
+  </div>
+  <p class="pfooter" style="margin-top:8px">
+    * Predicted using historical frequency — which department most commonly handles each complaint type in closed records · UrbanSync
+  </p>
 </div>
+
 
 <!-- ── FIFO vs CFS ── -->
 <div class="panel" id="c-fifo">

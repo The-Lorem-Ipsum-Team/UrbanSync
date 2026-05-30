@@ -164,7 +164,8 @@ def run_topic_modeling(df: pd.DataFrame, n_topics: int = 10) -> pd.DataFrame:
         from bertopic import BERTopic
         from sentence_transformers import SentenceTransformer
 
-        embedding_model = SentenceTransformer("airesearch/wangchanberta-base-att-spm-uncased")
+        embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+
         topic_model = BERTopic(embedding_model=embedding_model, nr_topics=n_topics, min_topic_size=15, language="multilingual", verbose=False)
         topics, _ = topic_model.fit_transform(processed)
         labels = {
@@ -185,6 +186,45 @@ def run_topic_modeling(df: pd.DataFrame, n_topics: int = 10) -> pd.DataFrame:
     return result
 
 
+def predict_department(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Predict the most appropriate ส่วนงาน (department) for each complaint
+    based on the most common historical assignee for that ประเภทคำร้อง.
+    Frequency-based model: simple, interpretable, auditable.
+    """
+    # Build lookup: complaint type -> most common department
+    closed = df[df['is_open'] == False].copy()
+    if len(closed) == 0:
+        df['predicted_department'] = 'ไม่ระบุ'
+        df['department_confidence'] = 0.0
+        return df
+
+    dept_lookup = {}
+    for complaint_type, group in closed.groupby('ประเภทคำร้อง'):
+        if 'ส่วนงาน' in group.columns:
+            counts = group['ส่วนงาน'].value_counts()
+            if len(counts) > 0:
+                top_dept = counts.index[0]
+                confidence = round(counts.iloc[0] / counts.sum(), 2)
+                dept_lookup[complaint_type] = (top_dept, confidence)
+
+    # Apply lookup to all complaints
+    predicted = []
+    confidences = []
+    for _, row in df.iterrows():
+        ct = row.get('ประเภทคำร้อง', '')
+        if ct in dept_lookup:
+            predicted.append(dept_lookup[ct][0])
+            confidences.append(dept_lookup[ct][1])
+        else:
+            predicted.append('ไม่ระบุ')
+            confidences.append(0.0)
+
+    df['predicted_department'] = predicted
+    df['department_confidence'] = confidences
+    return df
+
+
 def process_complaints(
     xlsx_path: str | Path,
     severity_lookup_path: str | Path,
@@ -193,6 +233,7 @@ def process_complaints(
 ) -> pd.DataFrame:
     """Run complaint loading, scoring, baseline, optional NLP, and save CSV output."""
     df = apply_severity_scores(load_complaints(xlsx_path), severity_lookup_path, keyword_path)
+    df = predict_department(df)
     compute_resolution_baseline(df)
     if run_nlp:
         df = run_topic_modeling(df)
@@ -200,3 +241,4 @@ def process_complaints(
     df.to_csv(OUTPUT_DIR / "complaints_enriched.csv", index=False, encoding="utf-8-sig")
     print(f"Complaints output saved -> {OUTPUT_DIR / 'complaints_enriched.csv'}")
     return df
+

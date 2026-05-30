@@ -84,7 +84,23 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         video_dir = Path(args.video_dir or "data/videos")
         if args.youtube_url:
             cv_pipeline.download_youtube_videos(args.youtube_url, video_dir)
-        cv_pipeline.process_all_videos(video_dir, args.model, config_dir / "video_tripwires.json", max_frames=args.max_frames, save_annotated=args.save_annotated, live_display=args.live, demo_frames=args.demo_frames)
+        video_location_map = {
+            "Highground": "ถ.ศรีจันทร์ – หนองโคตร ช่วงตลาดคำไฮ",
+            "Intersection": "ถ.มิตรภาพ ช่วงกลาง สี่แยกบ้านกอก มอ ภาค",
+            "Sideway": "ถ.เหล่านาดี หน้าแก่นนคร ถึงสนามกีฬา"
+        }
+        cv_pipeline.process_all_videos(
+            video_dir,
+            args.model,
+            config_dir / "video_tripwires.json",
+            video_location_map=video_location_map,
+            max_frames=args.max_frames,
+            save_annotated=args.save_annotated,
+            live_display=args.live,
+            demo_frames=args.demo_frames
+        )
+
+
 
     video_counts = output_dir / "video_counts.csv"
     traffic_df = _timed(
