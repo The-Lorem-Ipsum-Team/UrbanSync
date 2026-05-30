@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,40 @@ def _require_video_dependencies() -> tuple[Any, Any, Any]:
     return cv2, sv, YOLO
 
 
+def _get_best_device() -> str:
+    """Determine the best available device for YOLO inference.
+
+    Falls back to 'cpu' if CUDA is available but throws compatibility/runtime errors.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # Test a convolutional operation to ensure deep learning kernels compile and run
+            conv = torch.nn.Conv2d(1, 1, 1).cuda()
+            x = torch.zeros(1, 1, 1, 1).cuda()
+            _ = conv(x)
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def bbox_overlaps_line(xyxy: Any, start_x: float, start_y: float, end_x: float, end_y: float, orientation: str) -> bool:
+    """Check if the vehicle's bottom contact patch (wheels) overlaps the line zone segment."""
+    center_x = (xyxy[0] + xyxy[2]) / 2
+    bottom_y = xyxy[3]
+    if orientation == "sideways": # Vertical line segment
+        line_x = start_x
+        y_min = min(start_y, end_y)
+        y_max = max(start_y, end_y)
+        return (xyxy[0] <= line_x <= xyxy[2]) and (y_min <= bottom_y <= y_max)
+    else: # Overhead (Horizontal line segment)
+        line_y = start_y
+        x_min = min(start_x, end_x)
+        x_max = max(start_x, end_x)
+        return (xyxy[1] <= line_y <= xyxy[3]) and (x_min <= center_x <= x_max)
+
+
 def detect_camera_orientation(video_path: Path, model: Any, n_frames: int = 100) -> str:
     """Detect dominant vehicle movement direction from the first n_frames.
 
@@ -33,6 +68,10 @@ def detect_camera_orientation(video_path: Path, model: Any, n_frames: int = 100)
     or 'overhead' if vehicles move mostly vertically (up-down).
     Falls back to 'sideways' if no tracks are detected.
     """
+    name_lower = video_path.name.lower()
+    if "highground" in name_lower or "aerial" in name_lower or "drone" in name_lower:
+        return "overhead"
+
     try:
         import cv2 as _cv2
     except Exception as exc:
@@ -46,6 +85,7 @@ def detect_camera_orientation(video_path: Path, model: Any, n_frames: int = 100)
     track_positions: dict[int, list[tuple[float, float]]] = {}
     frame_count = 0
 
+    device = _get_best_device()
     for result in model.track(
         source=str(video_path),
         tracker="bytetrack.yaml",
@@ -53,6 +93,7 @@ def detect_camera_orientation(video_path: Path, model: Any, n_frames: int = 100)
         stream=True,
         verbose=False,
         classes=[2, 3, 5, 7],
+        device=device,
     ):
         if frame_count >= n_frames:
             break
@@ -112,15 +153,15 @@ def load_tripwire_config(
         # 2. Auto-orient based on detected movement direction
         if orientation == "sideways":
             selected = {
-                "line_A": [[0.5, 0.05], [0.5, 0.95]],
-                "line_B": [[0.48, 0.05], [0.48, 0.95]],
+                "line_A": [[0.30, 0.0], [0.30, 1.0]],
+                "line_B": [[0.70, 0.0], [0.70, 1.0]],
                 "direction_A_label": "rightbound",
                 "direction_B_label": "leftbound",
             }
         else:  # overhead
             selected = {
-                "line_A": [[0.1, 0.5], [0.9, 0.5]],
-                "line_B": [[0.1, 0.55], [0.9, 0.55]],
+                "line_A": [[0.0, 0.30], [1.0, 0.30]],
+                "line_B": [[0.0, 0.70], [1.0, 0.70]],
                 "direction_A_label": "northbound",
                 "direction_B_label": "southbound",
             }
@@ -151,6 +192,24 @@ def _count_classes(crossed: dict[int, str]) -> dict[str, int]:
     }
 
 
+def _calculate_iou(box1: Any, box2: Any) -> float:
+    """Calculate Intersection over Union (IoU) between two bounding boxes."""
+    x_left = max(box1[0], box2[0])
+    y_top = max(box1[1], box2[1])
+    x_right = min(box1[2], box2[2])
+    y_bottom = min(box1[3], box2[3])
+
+    if x_right < x_left or y_bottom < y_top:
+        return 0.0
+
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+    box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union_area = float(box1_area + box2_area - intersection_area)
+
+    return intersection_area / union_area if union_area > 0.0 else 0.0
+
+
 def process_video(
     video_path: str | Path,
     model_path: str | Path,
@@ -158,6 +217,8 @@ def process_video(
     video_id: str | None = None,
     location_name: str = "unknown",
     max_frames: int | None = None,
+    save_annotated: bool = True,
+    live_display: bool = False,
 ) -> dict[str, Any]:
     """Process one video and return unique tripwire-crossing vehicle counts (scaled if sampled).
 
@@ -172,9 +233,26 @@ def process_video(
         raise RuntimeError(f"Could not open video: {source}")
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 24.0)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     cap.release()
+
+    # Setup VideoWriter if save_annotated is True
+    video_writer = None
+    temp_out_path = None
+    final_out_path = None
+    if save_annotated:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        temp_out_path = OUTPUT_DIR / f"{identifier}_temp.mp4"
+        final_out_path = OUTPUT_DIR / f"{identifier}_annotated.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(str(temp_out_path), fourcc, fps, (frame_width, frame_height))
+        
+    if save_annotated or live_display:
+        # Modern supervision annotators scaled beautifully for resolution
+        box_annotator = sv.BoxAnnotator(thickness=2)
+        label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1)
+        trace_annotator = sv.TraceAnnotator(thickness=2, trace_length=30)
 
     # Load model first so it can be reused for orientation detection + main tracking
     model = YOLO(str(model_path))
@@ -190,39 +268,252 @@ def process_video(
     )
     line_a = tripwires["line_A_points"]
     line_b = tripwires["line_B_points"]
-    zone_a = sv.LineZone(start=sv.Point(*line_a[0]), end=sv.Point(*line_a[1]))
-    zone_b = sv.LineZone(start=sv.Point(*line_b[0]), end=sv.Point(*line_b[1]))
+    
     crossed_a: dict[int, str] = {}
     crossed_b: dict[int, str] = {}
     active_trackers: dict[int, dict[str, Any]] = {}
     processed_frames = 0
     previous_a = 0
     previous_b = 0
-    for result in model.track(source=str(source), tracker="bytetrack.yaml", persist=True, stream=True, verbose=False):
+
+    import numpy as np
+
+    # Define production-grade multilane perspective Polygon Lane ROIs
+    poly_lanes = []
+    lines = []
+    lane_groups = [] # 'A' or 'B'
+    
+    if identifier == "Highground":
+        # Left Carriageway - Lanes 1, 2, 3, 4 (Direction A - Going Away)
+        poly_0_pts = [[0, 480], [180, 1080], [730, 300], [700, 300]]
+        poly_1_pts = [[180, 1080], [420, 1080], [820, 300], [730, 300]]
+        poly_2_pts = [[420, 1080], [660, 1080], [930, 300], [820, 300]]
+        poly_3_pts = [[660, 1080], [880, 1080], [1050, 300], [930, 300]]
+        
+        # Right Carriageway - Lanes 5, 6, 7, 8 (Direction B - Coming Closer)
+        poly_4_pts = [[1060, 300], [1140, 300], [1250, 1080], [1080, 1080]]
+        poly_5_pts = [[1140, 300], [1220, 300], [1580, 1080], [1250, 1080]]
+        poly_6_pts = [[1220, 300], [1300, 300], [1820, 1080], [1580, 1080]]
+        poly_7_pts = [[1300, 300], [1920, 300], [1920, 1080], [1820, 1080]]
+        
+        poly_lanes = [
+            np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+            for pts in [poly_0_pts, poly_1_pts, poly_2_pts, poly_3_pts, poly_4_pts, poly_5_pts, poly_6_pts, poly_7_pts]
+        ]
+        
+        # Tripwire lines spanning the entire width of each perspective polygon lane
+        lines = [
+            [(100, 500), (589, 500)],   # Lane 1 (Service Road Left)
+            [(589, 500), (717, 500)],   # Lane 2 (Main Left)
+            [(717, 500), (861, 500)],   # Lane 3 (Main Middle)
+            [(861, 500), (1000, 500)],  # Lane 4 (Main Right)
+            [(1070, 600), (1210, 600)], # Lane 5 (Main Left)
+            [(1210, 600), (1350, 600)], # Lane 6 (Main Middle)
+            [(1350, 600), (1500, 600)], # Lane 7 (Main Right)
+            [(1500, 600), (1800, 600)], # Lane 8 (Service Road Right)
+        ]
+        lane_groups = ['A', 'A', 'A', 'A', 'B', 'B', 'B', 'B']
+        
+    elif identifier == "Sideway":
+        # Sideway has horizontal lanes (Direction A is Lane 1 / Far, Direction B is Lane 2 / Near)
+        poly_1_pts = [[0, 320], [frame_width, 320], [frame_width, 500], [0, 500]]
+        poly_2_pts = [[0, 500], [frame_width, 500], [frame_width, 1080], [0, 1080]]
+        
+        poly_lanes = [
+            np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+            for pts in [poly_1_pts, poly_2_pts]
+        ]
+        
+        lines = [
+            [(576, 350), (576, 470)],   # Lane 1
+            [(1344, 624), (1344, 884)], # Lane 2
+        ]
+        lane_groups = ['A', 'B']
+        
+    else:
+        # Fallback for any other videos (like Intersection.mp4)
+        if orientation == "sideways":
+            poly_1_pts = [[0, 0], [frame_width, 0], [frame_width, int(frame_height * 0.5)], [0, int(frame_height * 0.5)]]
+            poly_2_pts = [[0, int(frame_height * 0.5)], [frame_width, int(frame_height * 0.5)], [frame_width, frame_height], [0, frame_height]]
+            poly_lanes = [np.array(pts, dtype=np.int32).reshape((-1, 1, 2)) for pts in [poly_1_pts, poly_2_pts]]
+            lines = [line_a, line_b]
+            lane_groups = ['A', 'B']
+        else:
+            poly_1_pts = [[0, 0], [int(frame_width * 0.5), 0], [int(frame_width * 0.5), frame_height], [0, frame_height]]
+            poly_2_pts = [[int(frame_width * 0.5), 0], [frame_width, 0], [frame_width, frame_height], [int(frame_width * 0.5), frame_height]]
+            poly_lanes = [np.array(pts, dtype=np.int32).reshape((-1, 1, 2)) for pts in [poly_1_pts, poly_2_pts]]
+            lines = [line_a, line_b]
+            lane_groups = ['A', 'B']
+
+    # Instantiate LineZone for each lane with BOTTOM_CENTER grounding
+    zones = [
+        sv.LineZone(start=sv.Point(*line[0]), end=sv.Point(*line[1]), triggering_anchors=[sv.Position.BOTTOM_CENTER])
+        for line in lines
+    ]
+
+    # Adaptive YOLO inference resolution & confidence
+    # Overhead/drone/highground cams have tiny vehicles: require high resolution + lower confidence threshold
+    is_overhead = (orientation == "overhead")
+    imgsz = 1080 if is_overhead else 640
+    conf_threshold = 0.15 if is_overhead else 0.25
+
+    device = _get_best_device()
+    for result in model.track(
+        source=str(source),
+        tracker="bytetrack.yaml",
+        persist=True,
+        stream=True,
+        verbose=False,
+        device=device,
+        imgsz=imgsz,
+        conf=conf_threshold,
+    ):
         processed_frames += 1
+        
+        # Frame copy for annotation
+        frame = None
+        if save_annotated or live_display:
+            frame = result.orig_img.copy()
+
         detections = sv.Detections.from_ultralytics(result)
         class_ids = getattr(detections, "class_id", None)
         tracker_ids = getattr(detections, "tracker_id", None)
-        if class_ids is None or tracker_ids is None:
-            continue
-        mask = [(int(class_id) in {2, 3, 5, 7}) and tracker_id is not None for class_id, tracker_id in zip(class_ids, tracker_ids)]
-        detections = detections[mask]
-        zone_a.trigger(detections)
-        zone_b.trigger(detections)
-        for class_id, tracker_id in zip(detections.class_id, detections.tracker_id):
-            vehicle_class = _class_name(int(class_id))
-            if vehicle_class is None or tracker_id is None:
-                continue
-            tid = int(tracker_id)
-            if tid not in active_trackers:
-                active_trackers[tid] = {"class": vehicle_class, "frames": 0}
-            active_trackers[tid]["frames"] += 1
-            if zone_a.in_count > previous_a and int(tracker_id) not in crossed_a:
-                crossed_a[int(tracker_id)] = vehicle_class
-            if zone_b.in_count > previous_b and int(tracker_id) not in crossed_b:
-                crossed_b[int(tracker_id)] = vehicle_class
-        previous_a = zone_a.in_count
-        previous_b = zone_b.in_count
+        
+        if class_ids is not None and tracker_ids is not None:
+            mask = [(int(class_id) in {2, 3, 5, 7}) and tracker_id is not None for class_id, tracker_id in zip(class_ids, tracker_ids)]
+            detections = detections[mask]
+            
+            # CROSS-CLASS OVERLAPPING DETECTION FILTER (NMS)
+            # If two vehicle bounding boxes overlap significantly (IoU > 0.40), they represent the same vehicle.
+            # Keep only the one with higher confidence to prevent duplicate overlapping counts.
+            n_det = len(detections)
+            discarded = set()
+            for idx1 in range(n_det):
+                if idx1 in discarded:
+                    continue
+                for idx2 in range(idx1 + 1, n_det):
+                    if idx2 in discarded:
+                        continue
+                    iou = _calculate_iou(detections.xyxy[idx1], detections.xyxy[idx2])
+                    if iou > 0.40:
+                        conf1 = detections.confidence[idx1] if detections.confidence is not None else 0.0
+                        conf2 = detections.confidence[idx2] if detections.confidence is not None else 0.0
+                        if conf1 >= conf2:
+                            discarded.add(idx2)
+                        else:
+                            discarded.add(idx1)
+                            break
+            keep_mask = [i not in discarded for i in range(n_det)]
+            detections = detections[keep_mask]
+            
+            # Trigger each LineZone
+            for zone in zones:
+                _ = zone.trigger(detections)
+                
+            for i, (class_id, tracker_id) in enumerate(zip(detections.class_id, detections.tracker_id)):
+                vehicle_class = _class_name(int(class_id))
+                if vehicle_class is None or tracker_id is None:
+                    continue
+                tid = int(tracker_id)
+                
+                # Bottom-Center grounding coordinate (wheels contact patch)
+                bottom_cx = int((detections.xyxy[i][0] + detections.xyxy[i][2]) / 2)
+                bottom_cy = int(detections.xyxy[i][3])
+                
+                if tid not in active_trackers:
+                    active_trackers[tid] = {
+                        "classes": [],
+                        "frames": 0,
+                        "first_frame": processed_frames,
+                        "last_frame": processed_frames,
+                        "first_pos": (bottom_cx, bottom_cy),
+                        "last_pos": (bottom_cx, bottom_cy)
+                    }
+                active_trackers[tid]["classes"].append(vehicle_class)
+                active_trackers[tid]["frames"] += 1
+                active_trackers[tid]["last_frame"] = processed_frames
+                active_trackers[tid]["last_pos"] = (bottom_cx, bottom_cy)
+                
+                # Check each polygon lane containment
+                for lane_idx, (poly, zone, group) in enumerate(zip(poly_lanes, zones, lane_groups)):
+                    if cv2.pointPolygonTest(poly, (bottom_cx, bottom_cy), False) >= 0:
+                        # Check intersection with that specific tripwire segment
+                        if bbox_overlaps_line(detections.xyxy[i], zone.vector.start.x, zone.vector.start.y, zone.vector.end.x, zone.vector.end.y, orientation):
+                            if group == 'A':
+                                if tid not in crossed_a:
+                                    crossed_a[tid] = vehicle_class
+                            else:
+                                if tid not in crossed_b:
+                                    crossed_b[tid] = vehicle_class
+            
+            # Draw supervision annotations on the frame
+            if (save_annotated or live_display) and len(detections) > 0 and frame is not None:
+                labels = []
+                for class_id, tracker_id in zip(detections.class_id, detections.tracker_id):
+                    vclass = _class_name(int(class_id)) or "Vehicle"
+                    labels.append(f"{vclass} #{tracker_id}")
+                
+                frame = trace_annotator.annotate(scene=frame, detections=detections)
+                frame = box_annotator.annotate(scene=frame, detections=detections)
+                frame = label_annotator.annotate(scene=frame, detections=detections, labels=labels)
+
+        if (save_annotated or live_display) and frame is not None:
+            # Draw semi-transparent Polygon Lane ROIs
+            overlay_poly = frame.copy()
+            # Sleek harmonious color palette (Cyan for Direction A, Magenta for Direction B)
+            for poly, group in zip(poly_lanes, lane_groups):
+                color = (255, 255, 0) if group == 'A' else (203, 19, 224)
+                cv2.fillPoly(overlay_poly, [poly], color)
+            # Blend overlay with original frame (alpha = 0.08 for extremely subtle sleek shading)
+            cv2.addWeighted(overlay_poly, 0.08, frame, 0.92, 0, frame)
+
+            # Draw visual tripwires and lane labels
+            for idx, (line, group) in enumerate(zip(lines, lane_groups)):
+                color = (255, 255, 0) if group == 'A' else (203, 19, 224)
+                cv2.line(frame, line[0], line[1], color, 3)
+                
+                # Label positioning: slightly offset from line center
+                cx = int((line[0][0] + line[1][0]) / 2)
+                cy = int((line[0][1] + line[1][1]) / 2)
+                label_text = f"L{idx+1} ({'FAR' if idx==0 else 'NEAR'})" if identifier == "Sideway" else f"LANE {idx+1}"
+                cv2.putText(frame, label_text, (cx + 15, cy - 10), cv2.FONT_HERSHEY_DUPLEX, 0.45, color, 1)
+
+            # Cumulative counts for HUD
+            counts_a = _count_classes(crossed_a)
+            counts_b = _count_classes(crossed_b)
+            realtime_car = counts_a["Car"] + counts_b["Car"]
+            realtime_moto = counts_a["Motorcycle"] + counts_b["Motorcycle"]
+            realtime_truck = counts_a["Truck"] + counts_b["Truck"]
+            realtime_total = realtime_car + realtime_moto + realtime_truck
+
+            # Draw HUD Display
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (30, 30), (560, 330), (15, 23, 42), -1) # Dark Slate Blue
+            cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
+            cv2.rectangle(frame, (30, 30), (560, 330), (45, 212, 191), 2) # Teal border
+
+            # Text labels
+            cv2.putText(frame, f"UrbanSync: {identifier}", (50, 70), cv2.FONT_HERSHEY_DUPLEX, 0.75, (255, 255, 255), 2)
+            cv2.putText(frame, "---------------------------------------------", (50, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (45, 212, 191), 1)
+            cv2.putText(frame, f"Total Vehicles: {realtime_total}", (50, 130), cv2.FONT_HERSHEY_DUPLEX, 0.65, (45, 212, 191), 2)
+            cv2.putText(frame, f"  - Cars: {realtime_car}", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            cv2.putText(frame, f"  - Motorcycles: {realtime_moto}", (50, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            cv2.putText(frame, f"  - Trucks/Buses: {realtime_truck}", (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            
+            # Frame counter
+            cv2.putText(frame, f"Frame: {processed_frames}", (50, 295), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (148, 163, 184), 1)
+
+            # Write frame to video
+            if save_annotated and video_writer is not None:
+                video_writer.write(frame)
+
+            # Show live preview
+            if live_display:
+                cv2.imshow(f"UrbanSync Live Tracker - {identifier}", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print("  Live preview stopped by user ('q' pressed).")
+                    break
+
         if max_frames is not None and processed_frames >= max_frames:
             break
 
@@ -244,10 +535,65 @@ def process_video(
 
     scaling_factor = extrapolation_factor
 
+    from collections import Counter
+    # Resolve global stable majority class for all trackers
+    resolved_classes = {}
+    for tid, info in active_trackers.items():
+        if info["classes"]:
+            resolved_classes[tid] = Counter(info["classes"]).most_common(1)[0][0]
+        else:
+            resolved_classes[tid] = "Car"
+
+    # Track Merging to prevent ID switching/class switching double counts on same vehicle
+    merged_map = {tid: tid for tid in active_trackers}
+    sorted_tids = sorted(active_trackers.keys(), key=lambda x: active_trackers[x]["first_frame"])
+    
+    for idx1 in range(len(sorted_tids)):
+        tid1 = sorted_tids[idx1]
+        info1 = active_trackers[tid1]
+        for idx2 in range(idx1 + 1, len(sorted_tids)):
+            tid2 = sorted_tids[idx2]
+            info2 = active_trackers[tid2]
+            
+            frame_gap = info2["first_frame"] - info1["last_frame"]
+            if 0 <= frame_gap <= 30:
+                p1 = info1["last_pos"]
+                p2 = info2["first_pos"]
+                dist = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+                if dist < 120:
+                    merged_map[tid2] = merged_map[tid1]
+                    info1["last_frame"] = info2["last_frame"]
+                    info1["last_pos"] = info2["last_pos"]
+                    info1["classes"].extend(info2["classes"])
+                    
+    # Re-resolve global stable majority class after merging
+    for tid, info in active_trackers.items():
+        if info["classes"]:
+            resolved_classes[tid] = Counter(info["classes"]).most_common(1)[0][0]
+
     # Filter out brief tracks (less than 8 frames) to eliminate shadow/glitch noise
-    valid_trackers = {tid: info for tid, info in active_trackers.items() if info["frames"] >= 8}
-    counts_a = _count_classes(crossed_a)
-    counts_b = _count_classes(crossed_b)
+    valid_trackers = {
+        tid: {
+            "class": resolved_classes[tid],
+            "frames": info["frames"]
+        }
+        for tid, info in active_trackers.items()
+        if info["frames"] >= 8
+    }
+
+    # Deduplicate crossings using the merged track mapping and resolved classes
+    crossed_a_final = {}
+    for tid in crossed_a:
+        parent_tid = merged_map[tid]
+        crossed_a_final[parent_tid] = resolved_classes[parent_tid]
+        
+    crossed_b_final = {}
+    for tid in crossed_b:
+        parent_tid = merged_map[tid]
+        crossed_b_final[parent_tid] = resolved_classes[parent_tid]
+
+    counts_a = _count_classes(crossed_a_final)
+    counts_b = _count_classes(crossed_b_final)
     car_crossings = counts_a["Car"] + counts_b["Car"]
     motorcycle_crossings = counts_a["Motorcycle"] + counts_b["Motorcycle"]
     truck_crossings = counts_a["Truck"] + counts_b["Truck"]
@@ -272,9 +618,36 @@ def process_video(
         car_count = int(round(car_crossings * scaling_factor))
         motorcycle_count = int(round(motorcycle_crossings * scaling_factor))
         truck_count = int(round(truck_crossings * scaling_factor))
-        direction_a_total = int(round(len(crossed_a) * scaling_factor))
-        direction_b_total = int(round(len(crossed_b) * scaling_factor))
+        direction_a_total = int(round(len(crossed_a_final) * scaling_factor))
+        direction_b_total = int(round(len(crossed_b_final) * scaling_factor))
     
+    if video_writer is not None:
+        video_writer.release()
+        print(f"  Raw annotated video written for {identifier}.")
+
+    if live_display:
+        cv2.destroyAllWindows()
+
+    if save_annotated and temp_out_path is not None and temp_out_path.exists():
+        print(f"  Optimizing {identifier} video for seeking via FFmpeg...")
+        ffmpeg_exe = "C:/Users/Iris/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg.exe"
+        ffmpeg_cmd = [
+            ffmpeg_exe, "-y", "-i", str(temp_out_path),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", str(final_out_path)
+        ]
+        try:
+            subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            temp_out_path.unlink() # Delete the temp unoptimized file
+            print(f"  ✓ Seekable annotated video saved: {final_out_path}")
+        except Exception as exc:
+            print(f"  ⚠️ FFmpeg optimization failed: {exc}")
+            if temp_out_path.exists():
+                if final_out_path.exists():
+                    final_out_path.unlink()
+                temp_out_path.rename(final_out_path)
+                print(f"  ✓ Saved raw annotated video (seeking may be limited): {final_out_path}")
+
     return {
         "video_id": identifier,
         "location_name": location_name,
@@ -304,6 +677,8 @@ def process_all_videos(
     tripwire_config_path: str | Path,
     video_location_map: dict[str, str] | None = None,
     max_frames: int | None = None,
+    save_annotated: bool = True,
+    live_display: bool = False,
 ) -> pd.DataFrame:
     """Process all local video files, save outputs/video_counts.csv, and return a DataFrame."""
     try:
@@ -311,12 +686,15 @@ def process_all_videos(
     except Exception:
         tqdm = lambda value, **_: value
     directory = Path(video_dir)
-    files = sorted(path for path in directory.iterdir() if path.suffix.lower() in VIDEO_EXTENSIONS)
+    if directory.is_file():
+        files = [directory]
+    else:
+        files = sorted(path for path in directory.iterdir() if path.suffix.lower() in VIDEO_EXTENSIONS)
     rows: list[dict[str, Any]] = []
     for file_path in tqdm(files, desc="Processing videos"):
         try:
             location = (video_location_map or {}).get(file_path.stem, file_path.stem)
-            rows.append(process_video(file_path, model_path, tripwire_config_path, video_id=file_path.stem, location_name=location, max_frames=max_frames))
+            rows.append(process_video(file_path, model_path, tripwire_config_path, video_id=file_path.stem, location_name=location, max_frames=max_frames, save_annotated=save_annotated, live_display=live_display))
         except Exception as exc:
             print(f"Video failed: {file_path.name}: {exc}")
     df = pd.DataFrame(rows)
