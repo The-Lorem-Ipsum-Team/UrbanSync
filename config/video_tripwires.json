@@ -1,9 +1,27 @@
 {
-  "_note": "Auto-detection handles orientation. Add video_id entries here ONLY to override auto-detect for specific videos.",
+  "_note": "Manual overrides for specific videos. Auto-detection used for all others.",
+
+  "Highground": {
+    "line_A": [[0.15, 0.5], [0.85, 0.5]],
+    "line_B": [[0.15, 0.45], [0.85, 0.45]],
+    "direction_A_label": "southbound",
+    "direction_B_label": "northbound",
+    "_note": "Overhead camera. Horizontal lines cut across road lanes at midframe."
+  },
+
+  "Intersection": {
+    "line_A": [[0.5, 0.1], [0.5, 0.9]],
+    "line_B": [[0.45, 0.1], [0.45, 0.9]],
+    "direction_A_label": "eastbound",
+    "direction_B_label": "westbound",
+    "_note": "Intersection camera. Vertical lines cut across the main approach lanes. Adjust x positions if the main road runs differently in the actual frame."
+  },
+
   "Sideway": {
-    "line_A": [[0.30, 0.324], [0.30, 0.435]],
-    "line_B": [[0.70, 0.578], [0.70, 0.819]],
+    "line_A": [[0.5, 0.55], [0.5, 0.85]],
+    "line_B": [[0.48, 0.15], [0.48, 0.45]],
     "direction_A_label": "rightbound",
-    "direction_B_label": "leftbound"
+    "direction_B_label": "leftbound",
+    "_note": "Sideways street camera. Vertical tripwire at frame center. Adjust x (0.5) left/right if road is not centered in frame."
   }
 }

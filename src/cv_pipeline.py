@@ -211,6 +211,41 @@ def _calculate_iou(box1: Any, box2: Any) -> float:
     return intersection_area / union_area if union_area > 0.0 else 0.0
 
 
+def save_tripwire_preview(video_path: str | Path, tripwire_config: dict[str, Any], output_path: str | Path) -> None:
+    """Save frame 50 with tripwire lines drawn — for visual validation."""
+    import cv2
+    cap = cv2.VideoCapture(str(video_path))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Seek to frame 50
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 50)
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret or frame is None:
+        return
+
+    # Draw line_A in cyan
+    pts_A = tripwire_config.get('line_A', [])
+    if len(pts_A) == 2:
+        p1 = (int(pts_A[0][0]*w), int(pts_A[0][1]*h))
+        p2 = (int(pts_A[1][0]*w), int(pts_A[1][1]*h))
+        cv2.line(frame, p1, p2, (0,255,255), 3)
+        cv2.putText(frame, 'Line A', p1, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
+
+    # Draw line_B in magenta
+    pts_B = tripwire_config.get('line_B', [])
+    if len(pts_B) == 2:
+        p1 = (int(pts_B[0][0]*w), int(pts_B[0][1]*h))
+        p2 = (int(pts_B[1][0]*w), int(pts_B[1][1]*h))
+        cv2.line(frame, p1, p2, (255,0,255), 3)
+        cv2.putText(frame, 'Line B', p1, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,255), 2)
+
+    cv2.imwrite(str(output_path), frame)
+    print(f"  Tripwire preview saved: {output_path}")
+
+
 def process_video(
     video_path: str | Path,
     model_path: str | Path,
@@ -276,6 +311,8 @@ def process_video(
     crossed_A_bus: set[int] = set()
     crossed_B_bus: set[int] = set()
     active_trackers: dict[int, dict[str, Any]] = {}
+    track_class_streak: dict[int, dict[str, Any]] = {}
+
     processed_frames = 0
     previous_a = 0
     previous_b = 0
@@ -355,12 +392,6 @@ def process_video(
         for line in lines
     ]
 
-    # Adaptive YOLO inference resolution & confidence
-    # Overhead/drone/highground cams have tiny vehicles: require high resolution + lower confidence threshold
-    is_overhead = (orientation == "overhead")
-    imgsz = 1080 if is_overhead else 640
-    conf_threshold = 0.15 if is_overhead else 0.25
-
     device = _get_best_device()
     for result in model.track(
         source=str(source),
@@ -369,9 +400,13 @@ def process_video(
         stream=True,
         verbose=False,
         device=device,
-        imgsz=imgsz,
-        conf=conf_threshold,
+        imgsz=640,
+        conf=0.20,
+        iou=0.45,
+        classes=[2, 3, 5, 7],
     ):
+
+
         processed_frames += 1
         
         # Frame copy for annotation
@@ -424,6 +459,15 @@ def process_video(
                 bottom_cx = int((detections.xyxy[i][0] + detections.xyxy[i][2]) / 2)
                 bottom_cy = int(detections.xyxy[i][3])
                 
+                if tid not in track_class_streak:
+                    track_class_streak[tid] = {'class': vehicle_class, 'streak': 1}
+                else:
+                    if vehicle_class == track_class_streak[tid]['class']:
+                        track_class_streak[tid]['streak'] += 1
+                    else:
+                        track_class_streak[tid]['streak'] = 1
+                        track_class_streak[tid]['class'] = vehicle_class
+
                 if tid not in active_trackers:
                     active_trackers[tid] = {
                         "classes": [],
@@ -433,7 +477,11 @@ def process_video(
                         "first_pos": (bottom_cx, bottom_cy),
                         "last_pos": (bottom_cx, bottom_cy)
                     }
-                active_trackers[tid]["classes"].append(vehicle_class)
+                
+                # Only record in history if streak >= 3 OR it's the first detection
+                if track_class_streak[tid]['streak'] >= 3 or not active_trackers[tid]["classes"]:
+                    active_trackers[tid]["classes"].append(vehicle_class)
+
                 active_trackers[tid]["frames"] += 1
                 active_trackers[tid]["last_frame"] = processed_frames
                 active_trackers[tid]["last_pos"] = (bottom_cx, bottom_cy)
@@ -553,10 +601,13 @@ def process_video(
     # Resolve global stable majority class for all trackers
     resolved_classes = {}
     for tid, info in active_trackers.items():
-        if info["classes"]:
+        if len(info["classes"]) >= 5:
             resolved_classes[tid] = Counter(info["classes"]).most_common(1)[0][0]
+        elif len(info["classes"]) > 0:
+            resolved_classes[tid] = info["classes"][0]  # use first detection for short tracks
         else:
             resolved_classes[tid] = "Car"
+
 
     # Track Merging to prevent ID switching/class switching double counts on same vehicle
     merged_map = {tid: tid for tid in active_trackers}
@@ -583,18 +634,24 @@ def process_video(
                     
     # Re-resolve global stable majority class after merging
     for tid, info in active_trackers.items():
-        if info["classes"]:
+        if len(info["classes"]) >= 5:
             resolved_classes[tid] = Counter(info["classes"]).most_common(1)[0][0]
+        elif len(info["classes"]) > 0:
+            resolved_classes[tid] = info["classes"][0]
+        else:
+            resolved_classes[tid] = "Car"
 
-    # Filter out brief tracks (less than 8 frames) to eliminate shadow/glitch noise
+
+    # Filter out brief tracks (less than 5 frames) to eliminate shadow/glitch noise
     valid_trackers = {
         tid: {
             "class": resolved_classes[tid],
             "frames": info["frames"]
         }
         for tid, info in active_trackers.items()
-        if info["frames"] >= 8
+        if info["frames"] >= 5
     }
+
 
     # Deduplicate crossings using the merged track mapping and resolved classes
     crossed_a_final = {}
@@ -636,7 +693,8 @@ def process_video(
     if total_crossings == 0 and len(valid_trackers) > 0:
         counting_method = "self_heal_presence"
         print(f"  \u26a0 Self-heal activated [{identifier}]: tripwire captured 0 crossings.")
-        print(f"    Switching to presence-based count (tracks visible >= 8 frames).")
+        print(f"    Switching to presence-based count (tracks visible >= 5 frames).")
+
         print(f"    Stationary vehicles at signals will be included \u2014 valid density proxy.")
         car_count = int(round(sum(1 for info in valid_trackers.values() if info["class"] == "Car") * scaling_factor))
         motorcycle_count = int(round(sum(1 for info in valid_trackers.values() if info["class"] == "Motorcycle") * scaling_factor))
@@ -726,8 +784,19 @@ def process_all_videos(
     rows: list[dict[str, Any]] = []
     for file_path in tqdm(files, desc="Processing videos"):
         try:
+            video_id = file_path.stem
+            try:
+                import json
+                cfg = json.loads(Path(tripwire_config_path).read_text(encoding="utf-8"))
+                tripwire_cfg = cfg.get(video_id, cfg.get("default", {}))
+                preview_path = OUTPUT_DIR / f"tripwire_preview_{video_id}.jpg"
+                save_tripwire_preview(file_path, tripwire_cfg, preview_path)
+            except Exception as e:
+                print(f"  Warning: failed to save tripwire preview for {video_id}: {e}")
+
             location = (video_location_map or {}).get(file_path.stem, file_path.stem)
             rows.append(process_video(file_path, model_path, tripwire_config_path, video_id=file_path.stem, location_name=location, max_frames=max_frames, save_annotated=save_annotated, live_display=live_display, demo_frames=demo_frames))
+
         except Exception as exc:
             print(f"Video failed: {file_path.name}: {exc}")
     df = pd.DataFrame(rows)
